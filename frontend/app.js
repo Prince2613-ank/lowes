@@ -100,14 +100,15 @@ const state = {
 function initMap() {
     const map = L.map("map", { zoomControl: true }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
-    // Base layers - OpenStreetMap (default) and Esri World Imagery satellite,
-    // both public tile services requiring no API key. Only one is shown at a
-    // time; toggled via the "Satellite basemap" checkbox in the layer panel.
+    // Base layers - OpenStreetMap and Esri World Imagery satellite, both
+    // public tile services requiring no API key. Only one is shown at a
+    // time; toggled via the "Satellite basemap" checkbox in the layer panel,
+    // which is checked by default, so satellite is the initial basemap.
     state.layers.osmTile = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 23,
         maxNativeZoom: 19,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    }).addTo(map);
+    });
 
     state.layers.satelliteTile = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -116,7 +117,7 @@ function initMap() {
             maxNativeZoom: 19,
             attribution: "Tiles &copy; Esri",
         }
-    );
+    ).addTo(map);
 
     state.layers.departments = L.geoJSON(null, { style: departmentStyle, onEachFeature: onEachDepartment }).addTo(map);
     state.layers.deptLabels = L.layerGroup().addTo(map);
@@ -323,18 +324,7 @@ async function fetchJSON(url, options) {
 
 async function loadStores() {
     state.stores = await fetchJSON("/api/stores");
-    const select = document.getElementById("store-select");
-    select.innerHTML = "";
-    for (const store of state.stores) {
-        const opt = document.createElement("option");
-        opt.value = store.store_id;
-        opt.textContent = `${store.name} #${store.store_id}`;
-        select.appendChild(opt);
-    }
-    select.addEventListener("change", () => loadStore(select.value));
-
     if (state.stores.length > 0) {
-        select.value = state.stores[0].store_id;
         await loadStore(state.stores[0].store_id);
     }
 }
@@ -406,8 +396,6 @@ async function loadStore(storeId) {
     state.currentStoreId = storeId;
     state.currentStore = data.store;
 
-    document.getElementById("store-meta").textContent = data.store.address;
-
     clearFeatureLayers();
 
     await loadGeoJsonFloorplan();
@@ -475,6 +463,5 @@ document.addEventListener("DOMContentLoaded", async () => {
         await loadStores();
     } catch (err) {
         console.error("Failed to load stores:", err);
-        document.getElementById("store-meta").textContent = "Failed to load store directory.";
     }
 });
