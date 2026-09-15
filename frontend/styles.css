@@ -56,10 +56,10 @@ html, body {
     text-overflow: ellipsis;
 }
 
-#calibrate-toggle {
+#debug-toggle {
     margin-left: auto;
-    background: #f4b800;
-    color: #1a1a1a;
+    background: #333;
+    color: #fff;
     border: none;
     border-radius: 4px;
     padding: 8px 14px;
@@ -67,8 +67,132 @@ html, body {
     font-size: 13px;
     cursor: pointer;
 }
-#calibrate-toggle:hover { background: #ffc90e; }
-#calibrate-toggle.active { background: #d9534f; color: #fff; }
+#debug-toggle:hover { background: #4a4a4a; }
+#debug-toggle.active { background: #1a7f37; }
+
+/* ---------------------------------------------------------------------- */
+/* Debug panel                                                            */
+/* ---------------------------------------------------------------------- */
+
+#debug-panel {
+    position: absolute;
+    top: 66px;
+    left: 12px;
+    width: 250px;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    padding: 14px;
+    z-index: 1001;
+    font-size: 13px;
+    display: none;
+    max-height: calc(100vh - 90px);
+    overflow-y: auto;
+}
+#debug-panel.open { display: block; }
+
+#debug-panel h3 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+}
+
+.debug-hint {
+    margin: 0 0 10px 0;
+    font-size: 11px;
+    color: #666;
+    line-height: 1.4;
+}
+
+.debug-readout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    background: #f5f5f5;
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 10px;
+    font-size: 12px;
+}
+.debug-readout div { display: flex; justify-content: space-between; gap: 4px; }
+.debug-readout span { color: #666; }
+.debug-readout b { font-variant-numeric: tabular-nums; }
+
+.debug-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.debug-row label {
+    flex: 1;
+    font-weight: 600;
+    color: #333;
+}
+.debug-row input[type="number"] {
+    width: 64px;
+    padding: 4px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+.debug-row .unit { color: #888; font-size: 11px; }
+.debug-row select { flex: 1; padding: 5px; border: 1px solid #ccc; border-radius: 4px; }
+
+.debug-btn-row { justify-content: stretch; }
+.debug-btn-row button {
+    flex: 1;
+    padding: 7px;
+    border: 1px solid #ccc;
+    background: #f5f5f5;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+}
+.debug-btn-row button:hover { background: #e8e8e8; }
+
+.dpad {
+    display: grid;
+    grid-template-columns: 40px 40px 40px;
+    grid-template-rows: 40px 40px 40px;
+    gap: 4px;
+    justify-content: center;
+    margin-bottom: 10px;
+}
+.dpad button {
+    border: 1px solid #ccc;
+    background: #f5f5f5;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+}
+.dpad button:hover { background: #e8e8e8; }
+#dbg-move-reset { color: #c02020; }
+
+#dbg-reset-all {
+    width: 100%;
+    padding: 7px;
+    margin-bottom: 4px;
+    background: #eee;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+}
+#dbg-reset-all:hover { background: #ddd; }
+
+#dbg-copy, #dbg-download, #dbg-copy-all {
+    background: #004987;
+    color: #fff;
+    border: none;
+}
+#dbg-copy:hover, #dbg-download:hover, #dbg-copy-all:hover { background: #00366a; }
+
+#dbg-status {
+    margin-top: 4px;
+    font-size: 12px;
+    min-height: 16px;
+    color: #1a7f37;
+}
+#dbg-status.err { color: #c02020; }
 
 /* ---------------------------------------------------------------------- */
 /* Department polygons                                                    */
@@ -141,89 +265,6 @@ html, body {
 .leaflet-popup-content { font-size: 13px; }
 .leaflet-popup-content b { display: block; margin-bottom: 4px; }
 
-/* ---------------------------------------------------------------------- */
-/* Calibration panel                                                      */
-/* ---------------------------------------------------------------------- */
-
-#calibration-panel {
-    position: absolute;
-    top: 66px;
-    right: 12px;
-    width: 260px;
-    background: #fff;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-    padding: 14px;
-    z-index: 1000;
-    font-size: 13px;
-    display: none;
-}
-#calibration-panel.open { display: block; }
-
-#calibration-panel h3 {
-    margin: 0 0 10px 0;
-    font-size: 14px;
-}
-
-.cal-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-    gap: 6px;
-}
-
-.cal-row label {
-    flex: 0 0 70px;
-    font-weight: 600;
-    color: #333;
-}
-
-.cal-controls {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
-.cal-controls button {
-    width: 26px;
-    height: 26px;
-    border: 1px solid #ccc;
-    background: #f5f5f5;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: 700;
-    line-height: 1;
-}
-.cal-controls button:hover { background: #e8e8e8; }
-
-.cal-controls .cal-value {
-    width: 64px;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-}
-
-#cal-save {
-    width: 100%;
-    margin-top: 10px;
-    padding: 8px;
-    background: #004987;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    font-weight: 600;
-    cursor: pointer;
-}
-#cal-save:hover { background: #00366a; }
-
-#cal-status {
-    margin-top: 8px;
-    font-size: 12px;
-    min-height: 16px;
-}
-#cal-status.ok { color: #1a7f37; }
-#cal-status.err { color: #c02020; }
-
 /* Leaflet zoom control tweak (keep default +/- but style them a bit) */
 .leaflet-control-zoom a {
     font-weight: 700;
@@ -259,113 +300,6 @@ html, body {
     cursor: pointer;
 }
 
-/* ---------------------------------------------------------------------- */
-/* Auto align + alignment report                                         */
-/* ---------------------------------------------------------------------- */
-
-#cal-auto-align {
-    width: 100%;
-    margin-top: 4px;
-    padding: 8px;
-    background: #1a7f37;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    font-weight: 600;
-    cursor: pointer;
-}
-#cal-auto-align:hover { background: #146129; }
-
-#alignment-report {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid #eee;
-    font-size: 12px;
-}
-
-.align-row {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 3px;
-    color: #333;
-}
-.align-row span:first-child { font-weight: 600; color: #555; }
-
-/* ---------------------------------------------------------------------- */
-/* Control point editor                                                  */
-/* ---------------------------------------------------------------------- */
-
-.cp-row {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 6px;
-}
-
-.cp-row select,
-.cp-row input {
-    flex: 1;
-    padding: 5px 6px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    font-size: 12px;
-    min-width: 0;
-}
-
-#cp-add {
-    width: 100%;
-    padding: 6px;
-    background: #f5f5f5;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 12px;
-    margin-bottom: 8px;
-}
-#cp-add:hover { background: #e8e8e8; }
-
-#cp-list {
-    list-style: none;
-    margin: 0 0 8px 0;
-    padding: 0;
-    font-size: 12px;
-    max-height: 110px;
-    overflow-y: auto;
-}
-#cp-list li {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 4px 6px;
-    border-bottom: 1px solid #f0f0f0;
-}
-#cp-list li button {
-    border: none;
-    background: none;
-    color: #c02020;
-    cursor: pointer;
-    font-weight: 700;
-}
-
-#cp-save {
-    width: 100%;
-    padding: 8px;
-    background: #004987;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    font-weight: 600;
-    cursor: pointer;
-}
-#cp-save:hover { background: #00366a; }
-
-#cp-status {
-    margin-top: 6px;
-    font-size: 12px;
-    min-height: 14px;
-}
-#cp-status.ok { color: #1a7f37; }
-#cp-status.err { color: #c02020; }
-
 .building-label {
     background: rgba(255,255,255,0.9);
     border: 1px solid #ff0000;
@@ -376,19 +310,4 @@ html, body {
     padding: 1px 5px;
     white-space: nowrap;
     pointer-events: none;
-}
-
-.cp-marker {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: #7c3aed;
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    border: 2px solid #fff;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
 }

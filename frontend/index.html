@@ -18,7 +18,7 @@
         <div class="brand">Lowe's Store Map</div>
         <select id="store-select"></select>
         <div id="store-meta"></div>
-        <button id="calibrate-toggle" title="Calibrate floor plan alignment">Calibrate</button>
+        <button id="debug-toggle" title="Live-adjust the raw GeoJSON floor plan and copy the result">Debug</button>
     </div>
 
     <div id="map"></div>
@@ -27,135 +27,89 @@
         <h3>Layers</h3>
         <label class="layer-row"><input type="checkbox" id="layer-satellite" /> Satellite basemap</label>
         <label class="layer-row"><input type="checkbox" id="layer-building" checked /> Building footprint</label>
-        <label class="layer-row"><input type="checkbox" id="layer-svg-floorplan" checked /> GeoJSON floor plan</label>
+        <label class="layer-row"><input type="checkbox" id="layer-outlines" checked /> Outline lines (dept/aisle/rack borders)</label>
         <label class="layer-row"><input type="checkbox" id="layer-floorplan" checked /> GeoJSON departments/aisles/racks</label>
-        <label class="layer-row"><input type="checkbox" id="layer-controlpoints" /> Control points</label>
     </div>
 
-    <div id="calibration-panel">
-        <h3>SVG Floor Plan</h3>
+    <div id="debug-panel">
+        <h3>Debug: Live GeoJSON Adjust</h3>
+        <p class="debug-hint">
+            Moves/rotates/scales the actual rendered "Lowes_*.geojson" files
+            in real time. Nothing is saved to disk until you copy/download.
+        </p>
 
-        <div class="cal-row">
-            <label>Scale</label>
-            <div class="cal-controls">
-                <button data-svg-adjust="scale" data-dir="-1">-</button>
-                <span class="cal-value" id="svg-val-scale">1.000</span>
-                <button data-svg-adjust="scale" data-dir="1">+</button>
-            </div>
+        <div class="debug-readout">
+            <div><span>East</span><b id="dbg-east">0.0 m</b></div>
+            <div><span>North</span><b id="dbg-north">0.0 m</b></div>
+            <div><span>Rotation</span><b id="dbg-rotation">0.0°</b></div>
+            <div><span>Scale X</span><b id="dbg-scale-x">1.000</b></div>
+            <div><span>Scale Y</span><b id="dbg-scale-y">1.000</b></div>
         </div>
 
-        <div class="cal-row">
-            <label>Rotation</label>
-            <div class="cal-controls">
-                <button data-svg-adjust="rotation" data-dir="-1">-</button>
-                <span class="cal-value" id="svg-val-rotation">0°</span>
-                <button data-svg-adjust="rotation" data-dir="1">+</button>
-            </div>
+        <div class="debug-row">
+            <label>Move step</label>
+            <input type="number" id="dbg-move-step" value="1" min="0.01" step="0.5" />
+            <span class="unit">m</span>
         </div>
 
-        <div class="cal-row">
-            <label>X offset</label>
-            <div class="cal-controls">
-                <button data-svg-adjust="offset_x" data-dir="-1">-</button>
-                <span class="cal-value" id="svg-val-offset_x">0</span>
-                <button data-svg-adjust="offset_x" data-dir="1">+</button>
-            </div>
+        <div class="dpad">
+            <span></span>
+            <button id="dbg-move-n" title="Move north">▲</button>
+            <span></span>
+            <button id="dbg-move-w" title="Move west">◀</button>
+            <button id="dbg-move-reset" title="Reset position">●</button>
+            <button id="dbg-move-e" title="Move east">▶</button>
+            <span></span>
+            <button id="dbg-move-s" title="Move south">▼</button>
+            <span></span>
         </div>
 
-        <div class="cal-row">
-            <label>Y offset</label>
-            <div class="cal-controls">
-                <button data-svg-adjust="offset_y" data-dir="-1">-</button>
-                <span class="cal-value" id="svg-val-offset_y">0</span>
-                <button data-svg-adjust="offset_y" data-dir="1">+</button>
-            </div>
+        <div class="debug-row">
+            <label>Rotate step</label>
+            <input type="number" id="dbg-rotate-step" value="5" min="0.1" step="1" />
+            <span class="unit">deg</span>
+        </div>
+        <div class="debug-row debug-btn-row">
+            <button id="dbg-rotate-ccw" title="Rotate counter-clockwise">⟲ CCW</button>
+            <button id="dbg-rotate-cw" title="Rotate clockwise">⟳ CW</button>
         </div>
 
-        <div class="cal-row">
-            <label>Opacity</label>
-            <input type="range" id="svg-opacity" min="0" max="1" step="0.05" value="0.85" style="flex:1" />
+        <div class="debug-row">
+            <label>Scale step</label>
+            <input type="number" id="dbg-scale-step" value="0.02" min="0.001" step="0.01" />
+        </div>
+        <div class="debug-row debug-btn-row">
+            <button id="dbg-scale-x-down" title="Scale X down">− Scale X</button>
+            <button id="dbg-scale-x-up" title="Scale X up">+ Scale X</button>
+        </div>
+        <div class="debug-row debug-btn-row">
+            <button id="dbg-scale-y-down" title="Scale Y down">− Scale Y</button>
+            <button id="dbg-scale-y-up" title="Scale Y up">+ Scale Y</button>
         </div>
 
-        <button id="svg-auto-align">Auto Align SVG</button>
-        <button id="svg-save">Save SVG Calibration</button>
-        <div id="svg-status"></div>
+        <button id="dbg-reset-all">Reset All</button>
 
-        <h3>Department Layout Calibration</h3>
-
-        <div class="cal-row">
-            <label>Scale X</label>
-            <div class="cal-controls">
-                <button data-adjust="scale_x" data-dir="-1">-</button>
-                <span class="cal-value" id="val-scale_x">1.00</span>
-                <button data-adjust="scale_x" data-dir="1">+</button>
-            </div>
-        </div>
-
-        <div class="cal-row">
-            <label>Scale Y</label>
-            <div class="cal-controls">
-                <button data-adjust="scale_y" data-dir="-1">-</button>
-                <span class="cal-value" id="val-scale_y">1.00</span>
-                <button data-adjust="scale_y" data-dir="1">+</button>
-            </div>
-        </div>
-
-        <div class="cal-row">
-            <label>Rotation</label>
-            <div class="cal-controls">
-                <button data-adjust="rotation" data-dir="-1">-</button>
-                <span class="cal-value" id="val-rotation">0°</span>
-                <button data-adjust="rotation" data-dir="1">+</button>
-            </div>
-        </div>
-
-        <div class="cal-row">
-            <label>X offset</label>
-            <div class="cal-controls">
-                <button data-adjust="offset_x" data-dir="-1">-</button>
-                <span class="cal-value" id="val-offset_x">0</span>
-                <button data-adjust="offset_x" data-dir="1">+</button>
-            </div>
-        </div>
-
-        <div class="cal-row">
-            <label>Y offset</label>
-            <div class="cal-controls">
-                <button data-adjust="offset_y" data-dir="-1">-</button>
-                <span class="cal-value" id="val-offset_y">0</span>
-                <button data-adjust="offset_y" data-dir="1">+</button>
-            </div>
-        </div>
-
-        <button id="cal-auto-align">Auto Align</button>
-        <button id="cal-save">Save Calibration</button>
-        <div id="cal-status"></div>
-
-        <div id="alignment-report">
-            <div class="align-row"><span>Alignment error</span><span id="report-error">-</span></div>
-            <div class="align-row"><span>Building area</span><span id="report-building-area">-</span></div>
-            <div class="align-row"><span>Floor plan area</span><span id="report-floor-area">-</span></div>
-            <div class="align-row"><span>Rotation</span><span id="report-rotation">-</span></div>
-            <div class="align-row"><span>Scale (x / y)</span><span id="report-scale">-</span></div>
-        </div>
-
-        <h3>Control Points</h3>
-        <div class="cp-row">
-            <select id="cp-floor-point">
-                <option value="northwest">Floor NW corner</option>
-                <option value="northeast">Floor NE corner</option>
-                <option value="southeast">Floor SE corner</option>
-                <option value="southwest">Floor SW corner</option>
+        <h3>Copy / save result</h3>
+        <div class="debug-row">
+            <select id="dbg-dataset">
+                <option value="departments">departments (Lowes_depertment.geojson)</option>
+                <option value="departmentLines">departmentLines (Lowes_depertment_line.geojson)</option>
+                <option value="departmentPoints">departmentPoints (Lowes_depertment_point.geojson)</option>
+                <option value="aisles">aisles (Lowes_aisle.geojson)</option>
+                <option value="aisleLines">aisleLines (Lowes_aisle_line.geojson)</option>
+                <option value="aislePoints">aislePoints (Lowes_aisle_point.geojson)</option>
+                <option value="racks">racks (Lowes_rack.geojson)</option>
+                <option value="rackLines">rackLines (Lowes_rack_line.geojson)</option>
             </select>
         </div>
-        <div class="cp-row">
-            <input type="number" step="any" id="cp-lat" placeholder="Latitude" />
-            <input type="number" step="any" id="cp-lon" placeholder="Longitude" />
+        <div class="debug-row debug-btn-row">
+            <button id="dbg-copy">Copy GeoJSON</button>
+            <button id="dbg-download">Download File</button>
         </div>
-        <button id="cp-add">Add Control Point</button>
-        <ul id="cp-list"></ul>
-        <button id="cp-save">Save Control Points</button>
-        <div id="cp-status"></div>
+        <div class="debug-row debug-btn-row">
+            <button id="dbg-copy-all">Copy All 8 (bundle JSON)</button>
+        </div>
+        <div id="dbg-status"></div>
     </div>
 
     <script
