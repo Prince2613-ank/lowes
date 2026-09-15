@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from backend import georeference, layout_service, store_service
-from backend.config import ALLOWED_ORIGINS, FRONTEND_DIR, LAYOUT_IMAGES_DIR, LAYOUTS_DIR
+from backend.config import ALLOWED_ORIGINS, FRONTEND_DIR, GEOJSON_DIR, LAYOUT_IMAGES_DIR, LAYOUTS_DIR
 from backend.models import GeoreferenceFile, Transform
 from backend.store_service import InvalidStoreIdError, StoreNotFoundError
 
@@ -445,6 +445,7 @@ def api_get_floorplan(store_id: str):
 # ---------------------------------------------------------------------------
 
 app.mount("/static/layout-images", StaticFiles(directory=str(LAYOUT_IMAGES_DIR)), name="layout-images")
+app.mount("/static/geojson", StaticFiles(directory=str(GEOJSON_DIR)), name="geojson")
 
 
 # ---------------------------------------------------------------------------

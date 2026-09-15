@@ -46,6 +46,17 @@ const STORE_SERVICE_ICONS = {
     kitchen_design_desk: "🍽", // 🍽
 };
 
+const GEOJSON_FILES = {
+    departments: "/static/geojson/Lowes_depertment.geojson",
+    departmentLines: "/static/geojson/Lowes_depertment_line.geojson",
+    departmentPoints: "/static/geojson/Lowes_depertment_point.geojson",
+    aisles: "/static/geojson/Lowes_aisle.geojson",
+    aisleLines: "/static/geojson/Lowes_aisle_line.geojson",
+    aislePoints: "/static/geojson/Lowes_aisle_point.geojson",
+    racks: "/static/geojson/Lowes_rack.geojson",
+    rackLines: "/static/geojson/Lowes_rack_line.geojson",
+};
+
 function iconFor(category, markerType) {
     if (category === "basic_information") return BASIC_INFO_ICONS[markerType] || "ℹ";
     if (category === "store_service") return STORE_SERVICE_ICONS[markerType] || "🔧";
@@ -158,6 +169,9 @@ const state = {
         aisles: null,
         aisleLabels: null,
         racks: null,
+        departmentLines: null,
+        aisleLines: null,
+        rackLines: null,
         rackLabels: null,
         markers: null,   // array of {layer, minZoom}
         storePin: null,
@@ -167,6 +181,7 @@ const state = {
         osmTile: null,
         satelliteTile: null,
         svgFloorplan: null,   // SvgCornerOverlay instance, or null if no SVG registered
+        geojsonFloorplan: null,
     },
 
     building: null,       // raw building GeoJSON for the current store, or null if unavailable
@@ -213,6 +228,9 @@ function initMap() {
     state.layers.aisles = L.geoJSON(null, { style: aisleStyle, onEachFeature: onEachAisle }).addTo(map);
     state.layers.aisleLabels = L.layerGroup().addTo(map);
     state.layers.racks = L.geoJSON(null, { style: rackStyle, onEachFeature: onEachRack }).addTo(map);
+    state.layers.departmentLines = L.geoJSON(null, { style: departmentLineStyle }).addTo(map);
+    state.layers.aisleLines = L.geoJSON(null, { style: aisleLineStyle }).addTo(map);
+    state.layers.rackLines = L.geoJSON(null, { style: rackLineStyle }).addTo(map);
     state.layers.rackLabels = L.layerGroup().addTo(map);
     state.layers.markers = [];
     state.layers.markerGroup = L.layerGroup().addTo(map);
@@ -227,21 +245,40 @@ function initMap() {
 /* Feature styling                                                        */
 /* ---------------------------------------------------------------------- */
 
-function departmentStyle() {
+function departmentStyle(feature) {
+    return geoJsonStyle({ color: "#96A3BD", weight: 1, fillColor: "#D9E2F6", fillOpacity: 0.75 }, feature);
+}
+
+function aisleStyle(feature) {
+    return geoJsonStyle({ color: "#BBBBBB", weight: 1, fillColor: "#DCDEE2", fillOpacity: 0.7 }, feature);
+}
+
+function rackStyle(feature) {
+    return geoJsonStyle({ color: "#9ca3af", weight: 1, fillColor: "#DCDEE2", fillOpacity: 0.8 }, feature);
+}
+
+function departmentLineStyle(feature) {
+    return geoJsonStyle({ color: "#6b7280", weight: 1.5, opacity: 0.95 }, feature);
+}
+
+function aisleLineStyle(feature) {
+    return geoJsonStyle({ color: "#8b949e", weight: 1, opacity: 0.9 }, feature);
+}
+
+function rackLineStyle(feature) {
+    return geoJsonStyle({ color: "#4b5563", weight: 0.8, opacity: 0.85 }, feature);
+}
+
+function geoJsonStyle(defaults, feature = null) {
+    const props = feature?.properties || {};
+    const fillOpacity = props.opacity != null ? Number(props.opacity) : defaults.fillOpacity;
     return {
-        color: "#BCDDF4",
-        weight: 2,
-        fillColor: "#9BCBEB",
-        fillOpacity: 0.20,
+        color: props.stroke || defaults.color,
+        weight: Number(props["stroke-width"]) || defaults.weight,
+        opacity: defaults.opacity != null ? defaults.opacity : 1,
+        fillColor: props.fill || defaults.fillColor,
+        fillOpacity: Number.isFinite(fillOpacity) ? fillOpacity : defaults.fillOpacity,
     };
-}
-
-function aisleStyle() {
-    return { color: "#6b7280", weight: 2, dashArray: "4,3", opacity: 0.9 };
-}
-
-function rackStyle() {
-    return { color: "#9ca3af", weight: 1, fillColor: "#d1d5db", fillOpacity: 0.5 };
 }
 
 function buildingStyle() {
@@ -256,7 +293,7 @@ function onEachBuilding(feature, layer) {
 }
 
 function onEachDepartment(feature, layer) {
-    const name = feature.properties.label || feature.properties.name;
+    const name = feature.properties.label || feature.properties.name || feature.properties.poi_name || "Department";
     layer.bindPopup(`<b>${name}</b>${feature.properties.category ? humanize(feature.properties.category) : ""}`);
     const center = layer.getBounds().getCenter();
     const label = L.marker(center, {
@@ -268,7 +305,7 @@ function onEachDepartment(feature, layer) {
 }
 
 function onEachAisle(feature, layer) {
-    const name = feature.properties.label || feature.properties.name;
+    const name = feature.properties.label || feature.properties.name || "Aisle";
     layer.bindPopup(`<b>${name}</b>`);
     const center = layer.getBounds().getCenter();
     const label = L.marker(center, {
@@ -280,7 +317,7 @@ function onEachAisle(feature, layer) {
 }
 
 function onEachRack(feature, layer) {
-    const name = feature.properties.name || "Rack";
+    const name = feature.properties.label || feature.properties.name || "Rack";
     const info = feature.properties.info || "";
     layer.bindPopup(`<b>${name}</b>${info}`);
     const center = layer.getBounds().getCenter();
@@ -308,6 +345,45 @@ function buildMarkerLayer(feature) {
     return { layer: marker, minZoom: props.min_zoom || ZOOM.STORE_LEVEL };
 }
 
+function buildGeoJsonPointLayer(feature) {
+    const [lon, lat] = feature.geometry.coordinates;
+    const props = feature.properties || {};
+    const label = props.poi_name || props.name || props.label || "";
+    if (props.icon_id || props.poi_name) {
+        const category = props.profile === "STORE SERVICES" ? "store_service" : "basic_information";
+        const markerType = normalizeIconId(props.icon_id || props.sub_category);
+        const emoji = iconFor(category, markerType);
+        const marker = L.marker([lat, lon], {
+            icon: L.divIcon({
+                className: "",
+                html: `<div class="marker-icon ${category}">${emoji}</div>`,
+                iconSize: [26, 26],
+                iconAnchor: [13, 13],
+            }),
+        });
+        marker.bindPopup(`<b>${label || humanize(markerType)}</b>${props.profile ? humanize(props.profile.toLowerCase()) : ""}`);
+        return { layer: marker, minZoom: ZOOM.STORE_LEVEL };
+    }
+
+    return {
+        layer: L.marker([lat, lon], {
+            interactive: false,
+            icon: L.divIcon({ className: "aisle-label", html: label, iconSize: null }),
+        }),
+        minZoom: ZOOM.DEPT_LABELS,
+    };
+}
+
+function normalizeIconId(value) {
+    return String(value || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/pick_up/g, "pickup")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+}
+
 /* ---------------------------------------------------------------------- */
 /* Zoom-driven level of detail                                            */
 /* ---------------------------------------------------------------------- */
@@ -316,18 +392,24 @@ function updateZoomVisibility() {
     if (!state.map) return;
     const zoom = state.map.getZoom();
     const map = state.map;
+    const floorVisible = document.getElementById("layer-floorplan").checked;
+    const geoJsonFloorplanVisible = document.getElementById("layer-svg-floorplan").checked;
 
-    setLayerGroupVisible(state.layers.deptLabels, map, zoom >= ZOOM.DEPT_LABELS);
-    setLayerGroupVisible(state.layers.aisleLabels, map, zoom >= ZOOM.AISLE_LABELS);
-    setLayerGroupVisible(state.layers.rackLabels, map, zoom >= ZOOM.RACK_DETAIL);
+    setLayerGroupVisible(state.layers.deptLabels, map, floorVisible && zoom >= ZOOM.DEPT_LABELS);
+    setLayerGroupVisible(state.layers.aisleLabels, map, floorVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerGroupVisible(state.layers.rackLabels, map, floorVisible && zoom >= ZOOM.RACK_DETAIL);
 
     // Aisle geometry itself becomes visible a level before its labels do,
     // and rack geometry a level before rack labels/info.
-    setLayerVisible(state.layers.aisles, map, zoom >= ZOOM.DEPT_LABELS_ALL);
-    setLayerVisible(state.layers.racks, map, zoom >= ZOOM.AISLE_LABELS);
+    setLayerVisible(state.layers.departments, map, floorVisible);
+    setLayerVisible(state.layers.aisles, map, floorVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
+    setLayerVisible(state.layers.racks, map, floorVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerVisible(state.layers.departmentLines, map, geoJsonFloorplanVisible);
+    setLayerVisible(state.layers.aisleLines, map, geoJsonFloorplanVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
+    setLayerVisible(state.layers.rackLines, map, geoJsonFloorplanVisible && zoom >= ZOOM.AISLE_LABELS);
 
     for (const { layer, minZoom } of state.layers.markers) {
-        setLayerVisible(layer, map, zoom >= minZoom);
+        setLayerVisible(layer, map, floorVisible && zoom >= minZoom);
     }
 }
 
@@ -379,6 +461,9 @@ function clearFeatureLayers() {
     state.layers.aisles.clearLayers();
     state.layers.aisleLabels.clearLayers();
     state.layers.racks.clearLayers();
+    state.layers.departmentLines.clearLayers();
+    state.layers.aisleLines.clearLayers();
+    state.layers.rackLines.clearLayers();
     state.layers.rackLabels.clearLayers();
     state.layers.markerGroup.clearLayers();
     state.layers.markers = [];
@@ -389,6 +474,39 @@ function clearFeatureLayers() {
         state.map.removeLayer(state.layers.svgFloorplan);
         state.layers.svgFloorplan = null;
     }
+}
+
+async function loadGeoJsonFloorplan() {
+    const data = {};
+    await Promise.all(Object.entries(GEOJSON_FILES).map(async ([key, url]) => {
+        data[key] = await fetchJSON(url);
+    }));
+
+    state.layers.departments.addData(data.departments);
+    state.layers.departmentLines.addData(data.departmentLines);
+    state.layers.aisles.addData(data.aisles);
+    state.layers.aisleLines.addData(data.aisleLines);
+    state.layers.racks.addData(data.racks);
+    state.layers.rackLines.addData(data.rackLines);
+
+    for (const feature of data.departmentPoints.features || []) {
+        const point = buildGeoJsonPointLayer(feature);
+        if (feature.properties?.poi_name || feature.properties?.icon_id) {
+            state.layers.markers.push(point);
+            state.layers.markerGroup.addLayer(point.layer);
+        } else {
+            point.layer._minZoom = ZOOM.DEPT_LABELS;
+            state.layers.deptLabels.addLayer(point.layer);
+        }
+    }
+
+    for (const feature of data.aislePoints.features || []) {
+        const point = buildGeoJsonPointLayer(feature);
+        point.layer._minZoom = ZOOM.AISLE_LABELS;
+        state.layers.aisleLabels.addLayer(point.layer);
+    }
+
+    return data;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -481,38 +599,45 @@ async function loadStore(storeId) {
 
     clearFeatureLayers();
 
-    state.layers.departments.addData(data.layout.departments);
-    state.layers.aisles.addData(data.layout.aisles);
-    state.layers.racks.addData(data.layout.racks);
+    await loadGeoJsonFloorplan();
 
-    for (const feature of data.layout.markers.features) {
-        const { layer, minZoom } = buildMarkerLayer(feature);
-        state.layers.markers.push({ layer, minZoom });
-        state.layers.markerGroup.addLayer(layer);
+    const geoJsonBounds = L.featureGroup([
+        state.layers.departments,
+        state.layers.aisles,
+        state.layers.racks,
+        state.layers.departmentLines,
+        state.layers.aisleLines,
+        state.layers.rackLines,
+    ]).getBounds();
+    if (geoJsonBounds.isValid()) {
+        state.map.fitBounds(geoJsonBounds.pad(0.12), { maxZoom: ZOOM.DEPT_LABELS });
+    } else {
+        state.map.setView([data.anchor.latitude, data.anchor.longitude], DEFAULT_ZOOM);
     }
 
     if (state.layers.storePin) {
         state.map.removeLayer(state.layers.storePin);
     }
-    const pin = L.marker([data.anchor.latitude, data.anchor.longitude], {
+    const pinLatLng = geoJsonBounds.isValid()
+        ? geoJsonBounds.getCenter()
+        : L.latLng(data.anchor.latitude, data.anchor.longitude);
+    const pin = L.marker(pinLatLng, {
         icon: L.divIcon({
             className: "",
-            html: `<div class="marker-icon store-pin">📍</div>`,
+            html: `<div class="marker-icon store-pin">S</div>`,
             iconSize: [34, 34],
             iconAnchor: [17, 17],
         }),
     }).addTo(state.map);
     pin.bindPopup(`<b>${data.store.name}</b>${data.store.address}`);
     pin.on("click", () => {
-        state.map.setView([data.anchor.latitude, data.anchor.longitude], ZOOM.DEPT_LABELS);
+        state.map.setView(pinLatLng, ZOOM.DEPT_LABELS);
     });
     state.layers.storePin = pin;
 
-    state.map.setView([data.anchor.latitude, data.anchor.longitude], DEFAULT_ZOOM);
     updateZoomVisibility();
 
     await loadBuilding(storeId);
-    await loadFloorplan(storeId);
     await refreshAlignmentReport(storeId);
 }
 
@@ -782,6 +907,9 @@ async function enterCalibration() {
     setLayerGroupVisible(state.layers.aisles, state.map, false);
     setLayerGroupVisible(state.layers.aisleLabels, state.map, false);
     setLayerGroupVisible(state.layers.racks, state.map, false);
+    setLayerGroupVisible(state.layers.departmentLines, state.map, false);
+    setLayerGroupVisible(state.layers.aisleLines, state.map, false);
+    setLayerGroupVisible(state.layers.rackLines, state.map, false);
     setLayerGroupVisible(state.layers.rackLabels, state.map, false);
     setLayerGroupVisible(state.layers.markerGroup, state.map, false);
 
@@ -910,8 +1038,10 @@ function wireCalibrationControls() {
     document.getElementById("svg-auto-align").addEventListener("click", runSvgAutoAlign);
     document.getElementById("svg-save").addEventListener("click", saveSvgCalibration);
     document.getElementById("layer-svg-floorplan").addEventListener("change", (e) => {
-        if (!state.layers.svgFloorplan) return;
-        setLayerVisible(state.layers.svgFloorplan, state.map, e.target.checked);
+        const visible = e.target.checked;
+        setLayerVisible(state.layers.departmentLines, state.map, visible);
+        setLayerVisible(state.layers.aisleLines, state.map, visible && state.map.getZoom() >= ZOOM.DEPT_LABELS_ALL);
+        setLayerVisible(state.layers.rackLines, state.map, visible && state.map.getZoom() >= ZOOM.AISLE_LABELS);
     });
 
     document.getElementById("layer-satellite").addEventListener("change", (e) => {

@@ -18,6 +18,7 @@ STORES_FILE: Path = DATA_DIR / "stores.json"
 BUILDINGS_DIR: Path = DATA_DIR / "buildings"
 GEOREFERENCE_DIR: Path = DATA_DIR / "georeference"
 LAYOUT_IMAGES_DIR: Path = DATA_DIR / "layout-images"
+GEOJSON_DIR: Path = BASE_DIR
 
 FRONTEND_DIR: Path = BASE_DIR / "frontend"
 

@@ -2,16 +2,16 @@
   "store_id": "1665",
   "coordinate_system": "local",
   "anchor": {
-    "latitude": 41.8140843218019,
-    "longitude": -72.71526758866406
+    "latitude": 41.81428534168398,
+    "longitude": -72.71513231492122
   },
   "transform": {
     "scale": 0.3048,
     "scale_x": 0.38075182910156247,
     "scale_y": 0.36576000000000003,
-    "rotation_degrees": 179.66575583433118,
-    "offset_x": 85.20250560348846,
-    "offset_y": 48.330311187869754
+    "rotation_degrees": 179.66573577476515,
+    "offset_x": 82.70251568477988,
+    "offset_y": 46.814548348451396
   },
   "departments": [
     {
