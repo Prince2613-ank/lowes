@@ -88,13 +88,9 @@ const state = {
         rackLabels: null,
         markers: null,   // array of {layer, minZoom}
         storePin: null,
-        building: null,
         osmTile: null,
         satelliteTile: null,
-        geojsonFloorplan: null,
     },
-
-    building: null,       // raw building GeoJSON for the current store, or null if unavailable
 };
 
 /* ---------------------------------------------------------------------- */
@@ -121,12 +117,6 @@ function initMap() {
             attribution: "Tiles &copy; Esri",
         }
     );
-
-    // Building footprint (real-world GeoJSON) - drawn under the floor plan.
-    state.layers.building = L.geoJSON(null, {
-        style: buildingStyle,
-        onEachFeature: onEachBuilding,
-    }).addTo(map);
 
     state.layers.departments = L.geoJSON(null, { style: departmentStyle, onEachFeature: onEachDepartment }).addTo(map);
     state.layers.deptLabels = L.layerGroup().addTo(map);
@@ -182,17 +172,6 @@ function geoJsonStyle(defaults, feature = null) {
         fillColor: props.fill || defaults.fillColor,
         fillOpacity: Number.isFinite(fillOpacity) ? fillOpacity : defaults.fillOpacity,
     };
-}
-
-function buildingStyle() {
-    return { color: "#ff0000", weight: 2, fill: false };
-}
-
-function onEachBuilding(feature, layer) {
-    const props = feature.properties || {};
-    layer.bindPopup(`<b>${props.type === "store_building" ? "Building footprint" : "Building"}</b>${
-        props.source ? `Source: ${props.source}` : ""
-    }`);
 }
 
 function onEachDepartment(feature, layer) {
@@ -295,24 +274,26 @@ function updateZoomVisibility() {
     if (!state.map) return;
     const zoom = state.map.getZoom();
     const map = state.map;
-    const floorVisible = document.getElementById("layer-floorplan").checked;
-    const outlinesVisible = document.getElementById("layer-outlines").checked;
+    const deptVisible = document.getElementById("layer-department").checked;
+    const aisleVisible = document.getElementById("layer-aisle").checked;
+    const rackVisible = document.getElementById("layer-rack").checked;
 
-    setLayerGroupVisible(state.layers.deptLabels, map, floorVisible && zoom >= ZOOM.DEPT_LABELS);
-    setLayerGroupVisible(state.layers.aisleLabels, map, floorVisible && zoom >= ZOOM.AISLE_LABELS);
-    setLayerGroupVisible(state.layers.rackLabels, map, floorVisible && zoom >= ZOOM.RACK_DETAIL);
+    setLayerGroupVisible(state.layers.deptLabels, map, deptVisible && zoom >= ZOOM.DEPT_LABELS);
+    setLayerGroupVisible(state.layers.aisleLabels, map, aisleVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerGroupVisible(state.layers.rackLabels, map, rackVisible && zoom >= ZOOM.RACK_DETAIL);
 
     // Aisle geometry itself becomes visible a level before its labels do,
     // and rack geometry a level before rack labels/info.
-    setLayerVisible(state.layers.departments, map, floorVisible);
-    setLayerVisible(state.layers.aisles, map, floorVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
-    setLayerVisible(state.layers.racks, map, floorVisible && zoom >= ZOOM.AISLE_LABELS);
-    setLayerVisible(state.layers.departmentLines, map, outlinesVisible);
-    setLayerVisible(state.layers.aisleLines, map, outlinesVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
-    setLayerVisible(state.layers.rackLines, map, outlinesVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerVisible(state.layers.departments, map, deptVisible);
+    setLayerVisible(state.layers.departmentLines, map, deptVisible);
+    setLayerVisible(state.layers.aisles, map, aisleVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
+    setLayerVisible(state.layers.aisleLines, map, aisleVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
+    setLayerVisible(state.layers.racks, map, rackVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerVisible(state.layers.rackLines, map, rackVisible && zoom >= ZOOM.AISLE_LABELS);
 
+    setLayerGroupVisible(state.layers.markerGroup, map, deptVisible);
     for (const { layer, minZoom } of state.layers.markers) {
-        setLayerVisible(layer, map, floorVisible && zoom >= minZoom);
+        setLayerVisible(layer, map, deptVisible && zoom >= minZoom);
     }
 }
 
@@ -370,7 +351,6 @@ function clearFeatureLayers() {
     state.layers.rackLabels.clearLayers();
     state.layers.markerGroup.clearLayers();
     state.layers.markers = [];
-    state.layers.building.clearLayers();
 }
 
 async function loadGeoJsonFloorplan() {
@@ -421,25 +401,6 @@ function renderGeoJsonFloorplanData(data) {
     }
 }
 
-/* ---------------------------------------------------------------------- */
-/* Building footprint                                                     */
-/* ---------------------------------------------------------------------- */
-
-async function loadBuilding(storeId) {
-    state.building = null;
-    state.layers.building.clearLayers();
-    try {
-        const data = await fetchJSON(`/api/stores/${encodeURIComponent(storeId)}/building`);
-        if (data.status === "needs_calibration") {
-            return; // No building footprint on file - nothing to draw.
-        }
-        state.building = data;
-        state.layers.building.addData(data);
-    } catch (err) {
-        console.warn("Failed to load building footprint:", err);
-    }
-}
-
 async function loadStore(storeId) {
     const data = await fetchJSON(`/api/stores/${encodeURIComponent(storeId)}/map`);
     state.currentStoreId = storeId;
@@ -486,8 +447,6 @@ async function loadStore(storeId) {
     state.layers.storePin = pin;
 
     updateZoomVisibility();
-
-    await loadBuilding(storeId);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -495,34 +454,14 @@ async function loadStore(storeId) {
 /* ---------------------------------------------------------------------- */
 
 function wireLayerControls() {
-    document.getElementById("layer-outlines").addEventListener("change", (e) => {
-        const visible = e.target.checked;
-        setLayerVisible(state.layers.departmentLines, state.map, visible);
-        setLayerVisible(state.layers.aisleLines, state.map, visible && state.map.getZoom() >= ZOOM.DEPT_LABELS_ALL);
-        setLayerVisible(state.layers.rackLines, state.map, visible && state.map.getZoom() >= ZOOM.AISLE_LABELS);
-    });
-
     document.getElementById("layer-satellite").addEventListener("change", (e) => {
         setLayerVisible(state.layers.osmTile, state.map, !e.target.checked);
         setLayerVisible(state.layers.satelliteTile, state.map, e.target.checked);
     });
-    document.getElementById("layer-building").addEventListener("change", (e) => {
-        setLayerVisible(state.layers.building, state.map, e.target.checked);
-    });
-    document.getElementById("layer-floorplan").addEventListener("change", (e) => {
-        const visible = e.target.checked;
-        setLayerVisible(state.layers.departments, state.map, visible);
-        setLayerVisible(state.layers.aisles, state.map, visible && state.map.getZoom() >= ZOOM.DEPT_LABELS_ALL);
-        setLayerVisible(state.layers.racks, state.map, visible && state.map.getZoom() >= ZOOM.AISLE_LABELS);
-        setLayerGroupVisible(state.layers.markerGroup, state.map, visible);
-        if (!visible) {
-            setLayerGroupVisible(state.layers.deptLabels, state.map, false);
-            setLayerGroupVisible(state.layers.aisleLabels, state.map, false);
-            setLayerGroupVisible(state.layers.rackLabels, state.map, false);
-        } else {
-            updateZoomVisibility();
-        }
-    });
+
+    for (const id of ["layer-department", "layer-aisle", "layer-rack"]) {
+        document.getElementById(id).addEventListener("change", updateZoomVisibility);
+    }
 }
 
 /* ---------------------------------------------------------------------- */
