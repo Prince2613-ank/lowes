@@ -1,10 +1,10 @@
 /* ==========================================================================
  * Lowe's Interactive Store Map - frontend application logic.
  *
- * Talks to the FastAPI backend for store directory + geo-transformed floor
- * layouts, renders them on a Leaflet map over OpenStreetMap tiles, and
- * provides a calibration mode that lets a user tune the per-store
- * anchor/scale/rotation/offset transform and save it back to the server.
+ * Talks to the FastAPI backend for the store directory, renders the raw
+ * Lowes_*.geojson floor plan on a Leaflet map over OpenStreetMap tiles, and
+ * provides a Debug panel that live-transforms (move/rotate/scale) that
+ * GeoJSON and lets you copy/download the result.
  * ========================================================================== */
 
 const DEFAULT_CENTER = [41.8140843218019, -72.71526758866406];
@@ -69,88 +69,6 @@ function humanize(s) {
 }
 
 /* ---------------------------------------------------------------------- */
-/* SVG floor-plan overlay - a real Leaflet layer, not a fixed-position div. */
-/*                                                                          */
-/* The uploaded floor-plan SVG is kept as vector data (never rasterized)   */
-/* and geographically anchored via three reference corners (top-left,     */
-/* top-right, bottom-left in the SVG's own pixel space). Three points     */
-/* fully determine a 2D affine placement (translation + rotation + scale, */
-/* and shear if ever needed) - the same technique used by the standard    */
-/* Leaflet.ImageOverlay.Rotated plugin, implemented directly here so no   */
-/* extra script tag/CDN dependency is required.                          */
-/* ---------------------------------------------------------------------- */
-
-const SvgCornerOverlay = L.Layer.extend({
-    initialize(svgElement, corners, options) {
-        this._svgElement = svgElement;
-        this._svgWidth = svgElement.width.baseVal.value || parseFloat(svgElement.getAttribute("width"));
-        this._svgHeight = svgElement.height.baseVal.value || parseFloat(svgElement.getAttribute("height"));
-        this.setCorners(corners, /* reset */ false);
-        L.setOptions(this, options);
-    },
-
-    onAdd(map) {
-        this._map = map;
-        if (!this._container) {
-            this._container = L.DomUtil.create("div", "svg-corner-overlay-container");
-            this._container.appendChild(this._svgElement);
-        }
-        this._svgElement.style.position = "absolute";
-        this._svgElement.style.left = "0";
-        this._svgElement.style.top = "0";
-        this._svgElement.style.transformOrigin = "0 0";
-        this._svgElement.style.pointerEvents = "none";
-        this._svgElement.style.opacity = this.options.opacity != null ? this.options.opacity : 1;
-        map.getPane(this.options.pane || "overlayPane").appendChild(this._container);
-        map.on("zoom move viewreset resize", this._reset, this);
-        this._reset();
-        return this;
-    },
-
-    onRemove(map) {
-        L.DomUtil.remove(this._container);
-        map.off("zoom move viewreset resize", this._reset, this);
-    },
-
-    setCorners(corners, reset = true) {
-        this._topLeft = L.latLng(corners.top_left.latitude, corners.top_left.longitude);
-        this._topRight = L.latLng(corners.top_right.latitude, corners.top_right.longitude);
-        this._bottomLeft = L.latLng(corners.bottom_left.latitude, corners.bottom_left.longitude);
-        if (reset) this._reset();
-    },
-
-    setOpacity(opacity) {
-        this.options.opacity = opacity;
-        if (this._svgElement) this._svgElement.style.opacity = opacity;
-    },
-
-    _reset() {
-        if (!this._map || !this._topLeft) return;
-        const map = this._map;
-        const p0 = map.latLngToLayerPoint(this._topLeft);
-        const p1 = map.latLngToLayerPoint(this._topRight);
-        const p2 = map.latLngToLayerPoint(this._bottomLeft);
-
-        const w0 = this._svgWidth;
-        const h0 = this._svgHeight;
-
-        // Affine matrix (a, b, c, d, e, f) mapping SVG-local (x, y) -> map
-        // layer pixel (x', y'): x' = a*x + c*y + e ; y' = b*x + d*y + f
-        // (CSS matrix() convention), solved from the 3 corner correspondences.
-        const e = p0.x, f = p0.y;
-        const a = (p1.x - e) / w0;
-        const b = (p1.y - f) / w0;
-        const c = (p2.x - e) / h0;
-        const d = (p2.y - f) / h0;
-
-        L.DomUtil.setPosition(this._container, new L.Point(0, 0));
-        this._svgElement.style.width = `${w0}px`;
-        this._svgElement.style.height = `${h0}px`;
-        this._svgElement.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f})`;
-    },
-});
-
-/* ---------------------------------------------------------------------- */
 /* App state                                                              */
 /* ---------------------------------------------------------------------- */
 
@@ -159,9 +77,6 @@ const state = {
     stores: [],
     currentStoreId: null,
     currentStore: null,
-    rawLayout: null,       // populated when entering calibration mode
-    calibrating: false,
-    calValues: null,       // {anchor_latitude, anchor_longitude, scale, rotation_degrees, offset_x, offset_y}
 
     layers: {
         departments: null,
@@ -175,21 +90,24 @@ const state = {
         rackLabels: null,
         markers: null,   // array of {layer, minZoom}
         storePin: null,
-        preview: null,
         building: null,
-        controlPoints: null,
         osmTile: null,
         satelliteTile: null,
-        svgFloorplan: null,   // SvgCornerOverlay instance, or null if no SVG registered
         geojsonFloorplan: null,
     },
 
     building: null,       // raw building GeoJSON for the current store, or null if unavailable
-    controlPoints: [],    // in-progress control point list while calibrating
-    floorBounds: null,    // {minX, minY, maxX, maxY} of the current raw layout, computed client-side
 
-    floorplan: null,       // {file, width, height, opacity, transform, reference_corners} or null
-    svgCalValues: null,    // {scale, rotation_degrees, offset_x, offset_y, opacity} - SVG-specific calibration
+    debug: {
+        active: false,
+        originals: null,    // pristine fetched GeoJSON for all 8 GEOJSON_FILES keys, keyed the same way
+        anchor: null,       // {latitude, longitude} pivot for the live transform
+        east: 0,            // cumulative move, meters
+        north: 0,
+        rotationDeg: 0,     // cumulative rotation, degrees
+        scaleX: 1,          // cumulative scale, east-west
+        scaleY: 1,          // cumulative scale, north-south
+    },
 };
 
 /* ---------------------------------------------------------------------- */
@@ -234,8 +152,6 @@ function initMap() {
     state.layers.rackLabels = L.layerGroup().addTo(map);
     state.layers.markers = [];
     state.layers.markerGroup = L.layerGroup().addTo(map);
-    state.layers.preview = L.layerGroup().addTo(map);
-    state.layers.controlPoints = L.layerGroup(); // shown via the "Control points" checkbox
 
     map.on("zoomend", updateZoomVisibility);
     state.map = map;
@@ -393,7 +309,7 @@ function updateZoomVisibility() {
     const zoom = state.map.getZoom();
     const map = state.map;
     const floorVisible = document.getElementById("layer-floorplan").checked;
-    const geoJsonFloorplanVisible = document.getElementById("layer-svg-floorplan").checked;
+    const outlinesVisible = document.getElementById("layer-outlines").checked;
 
     setLayerGroupVisible(state.layers.deptLabels, map, floorVisible && zoom >= ZOOM.DEPT_LABELS);
     setLayerGroupVisible(state.layers.aisleLabels, map, floorVisible && zoom >= ZOOM.AISLE_LABELS);
@@ -404,9 +320,9 @@ function updateZoomVisibility() {
     setLayerVisible(state.layers.departments, map, floorVisible);
     setLayerVisible(state.layers.aisles, map, floorVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
     setLayerVisible(state.layers.racks, map, floorVisible && zoom >= ZOOM.AISLE_LABELS);
-    setLayerVisible(state.layers.departmentLines, map, geoJsonFloorplanVisible);
-    setLayerVisible(state.layers.aisleLines, map, geoJsonFloorplanVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
-    setLayerVisible(state.layers.rackLines, map, geoJsonFloorplanVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerVisible(state.layers.departmentLines, map, outlinesVisible);
+    setLayerVisible(state.layers.aisleLines, map, outlinesVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
+    setLayerVisible(state.layers.rackLines, map, outlinesVisible && zoom >= ZOOM.AISLE_LABELS);
 
     for (const { layer, minZoom } of state.layers.markers) {
         setLayerVisible(layer, map, floorVisible && zoom >= minZoom);
@@ -467,13 +383,7 @@ function clearFeatureLayers() {
     state.layers.rackLabels.clearLayers();
     state.layers.markerGroup.clearLayers();
     state.layers.markers = [];
-    state.layers.preview.clearLayers();
     state.layers.building.clearLayers();
-    state.layers.controlPoints.clearLayers();
-    if (state.layers.svgFloorplan) {
-        state.map.removeLayer(state.layers.svgFloorplan);
-        state.layers.svgFloorplan = null;
-    }
 }
 
 async function loadGeoJsonFloorplan() {
@@ -481,6 +391,37 @@ async function loadGeoJsonFloorplan() {
     await Promise.all(Object.entries(GEOJSON_FILES).map(async ([key, url]) => {
         data[key] = await fetchJSON(url);
     }));
+
+    // Keep a pristine copy + the pivot anchor for the live Debug panel
+    // (see wireDebugControls / renderDebugGeoJson below) - independent of
+    // whatever the currently-rendered (possibly debug-transformed) state is.
+    state.debug.originals = JSON.parse(JSON.stringify(data));
+    state.debug.anchor = state.currentStore
+        ? { latitude: state.currentStore.latitude, longitude: state.currentStore.longitude }
+        : null;
+    state.debug.east = 0;
+    state.debug.north = 0;
+    state.debug.rotationDeg = 0;
+    state.debug.scaleX = 1;
+    state.debug.scaleY = 1;
+    updateDebugReadout();
+
+    renderGeoJsonFloorplanData(data);
+
+    return data;
+}
+
+function renderGeoJsonFloorplanData(data) {
+    state.layers.departments.clearLayers();
+    state.layers.departmentLines.clearLayers();
+    state.layers.aisles.clearLayers();
+    state.layers.aisleLines.clearLayers();
+    state.layers.racks.clearLayers();
+    state.layers.rackLines.clearLayers();
+    state.layers.deptLabels.clearLayers();
+    state.layers.aisleLabels.clearLayers();
+    state.layers.markerGroup.clearLayers();
+    state.layers.markers = [];
 
     state.layers.departments.addData(data.departments);
     state.layers.departmentLines.addData(data.departmentLines);
@@ -505,46 +446,223 @@ async function loadGeoJsonFloorplan() {
         point.layer._minZoom = ZOOM.AISLE_LABELS;
         state.layers.aisleLabels.addLayer(point.layer);
     }
-
-    return data;
 }
 
 /* ---------------------------------------------------------------------- */
-/* SVG floor-plan overlay                                                 */
+/* Debug panel: live move/rotate/scale of the raw GeoJSON floor plan      */
 /* ---------------------------------------------------------------------- */
 
-async function loadFloorplan(storeId) {
-    state.floorplan = null;
-    if (state.layers.svgFloorplan) {
-        state.map.removeLayer(state.layers.svgFloorplan);
-        state.layers.svgFloorplan = null;
+function debugMetersPerDeg(anchor) {
+    return {
+        lat: 111320,
+        lon: 111320 * Math.cos((anchor.latitude * Math.PI) / 180),
+    };
+}
+
+function debugTransformLonLat(lon, lat) {
+    const anchor = state.debug.anchor;
+    const mpd = debugMetersPerDeg(anchor);
+    let east = (lon - anchor.longitude) * mpd.lon;
+    let north = (lat - anchor.latitude) * mpd.lat;
+
+    // scale (independently per axis), then rotate about the anchor, then translate
+    east *= state.debug.scaleX;
+    north *= state.debug.scaleY;
+    const theta = (state.debug.rotationDeg * Math.PI) / 180;
+    const rEast = east * Math.cos(theta) - north * Math.sin(theta);
+    const rNorth = east * Math.sin(theta) + north * Math.cos(theta);
+    east = rEast + state.debug.east;
+    north = rNorth + state.debug.north;
+
+    return [anchor.longitude + east / mpd.lon, anchor.latitude + north / mpd.lat];
+}
+
+function debugTransformCoords(coords) {
+    if (typeof coords[0] === "number") {
+        return debugTransformLonLat(coords[0], coords[1]);
+    }
+    return coords.map(debugTransformCoords);
+}
+
+function debugTransformFeatureCollection(fc) {
+    const clone = JSON.parse(JSON.stringify(fc));
+    for (const feature of clone.features || []) {
+        if (feature.geometry && feature.geometry.coordinates) {
+            feature.geometry.coordinates = debugTransformCoords(feature.geometry.coordinates);
+        }
+    }
+    return clone;
+}
+
+function debugCurrentDataset(key) {
+    return debugTransformFeatureCollection(state.debug.originals[key]);
+}
+
+function debugCurrentAllDatasets() {
+    const out = {};
+    for (const key of Object.keys(GEOJSON_FILES)) out[key] = debugCurrentDataset(key);
+    return out;
+}
+
+function renderDebugGeoJson() {
+    if (!state.debug.originals || !state.debug.anchor) return;
+    renderGeoJsonFloorplanData(debugCurrentAllDatasets());
+}
+
+function updateDebugReadout() {
+    document.getElementById("dbg-east").textContent = `${state.debug.east.toFixed(2)} m`;
+    document.getElementById("dbg-north").textContent = `${state.debug.north.toFixed(2)} m`;
+    document.getElementById("dbg-rotation").textContent = `${state.debug.rotationDeg.toFixed(1)}°`;
+    document.getElementById("dbg-scale-x").textContent = state.debug.scaleX.toFixed(3);
+    document.getElementById("dbg-scale-y").textContent = state.debug.scaleY.toFixed(3);
+}
+
+function debugSetStatus(msg, isErr) {
+    const el = document.getElementById("dbg-status");
+    el.textContent = msg;
+    el.className = isErr ? "err" : "";
+}
+
+function debugFilenameFor(key) {
+    return GEOJSON_FILES[key].split("/").pop();
+}
+
+function debugDownload(filename, content) {
+    const blob = new Blob([content], { type: "application/geo+json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+function wireDebugControls() {
+    const toggle = document.getElementById("debug-toggle");
+    const panel = document.getElementById("debug-panel");
+
+    toggle.addEventListener("click", () => {
+        state.debug.active = !state.debug.active;
+        toggle.classList.toggle("active", state.debug.active);
+        panel.classList.toggle("open", state.debug.active);
+    });
+
+    const moveStepEl = document.getElementById("dbg-move-step");
+    const rotateStepEl = document.getElementById("dbg-rotate-step");
+    const scaleStepEl = document.getElementById("dbg-scale-step");
+
+    function afterAdjust() {
+        updateDebugReadout();
+        renderDebugGeoJson();
     }
 
-    let data;
-    try {
-        data = await fetchJSON(`/api/stores/${encodeURIComponent(storeId)}/floorplan`);
-    } catch (err) {
-        console.warn("Failed to load floor-plan info:", err);
-        return;
-    }
-    if (data.status === "needs_calibration" || !data.reference_corners) {
-        return; // No SVG registered (or not yet georeferenced) for this store.
-    }
-    state.floorplan = data;
+    document.getElementById("dbg-move-n").addEventListener("click", () => {
+        state.debug.north += Number(moveStepEl.value) || 0;
+        afterAdjust();
+    });
+    document.getElementById("dbg-move-s").addEventListener("click", () => {
+        state.debug.north -= Number(moveStepEl.value) || 0;
+        afterAdjust();
+    });
+    document.getElementById("dbg-move-e").addEventListener("click", () => {
+        state.debug.east += Number(moveStepEl.value) || 0;
+        afterAdjust();
+    });
+    document.getElementById("dbg-move-w").addEventListener("click", () => {
+        state.debug.east -= Number(moveStepEl.value) || 0;
+        afterAdjust();
+    });
+    document.getElementById("dbg-move-reset").addEventListener("click", () => {
+        state.debug.east = 0;
+        state.debug.north = 0;
+        afterAdjust();
+    });
 
-    const svgText = await (await fetch(data.file)).text();
-    const svgDoc = new DOMParser().parseFromString(svgText, "image/svg+xml");
-    const svgEl = svgDoc.documentElement;
+    document.getElementById("dbg-rotate-cw").addEventListener("click", () => {
+        state.debug.rotationDeg = (state.debug.rotationDeg + (Number(rotateStepEl.value) || 0)) % 360;
+        afterAdjust();
+    });
+    document.getElementById("dbg-rotate-ccw").addEventListener("click", () => {
+        state.debug.rotationDeg = (state.debug.rotationDeg - (Number(rotateStepEl.value) || 0) + 360) % 360;
+        afterAdjust();
+    });
 
-    const layer = new SvgCornerOverlay(svgEl, data.reference_corners, { opacity: data.opacity });
-    state.layers.svgFloorplan = layer;
-    if (document.getElementById("layer-svg-floorplan").checked) {
-        layer.addTo(state.map);
-    }
+    document.getElementById("dbg-scale-x-up").addEventListener("click", () => {
+        state.debug.scaleX += Number(scaleStepEl.value) || 0;
+        afterAdjust();
+    });
+    document.getElementById("dbg-scale-x-down").addEventListener("click", () => {
+        state.debug.scaleX = Math.max(0.01, state.debug.scaleX - (Number(scaleStepEl.value) || 0));
+        afterAdjust();
+    });
+    document.getElementById("dbg-scale-y-up").addEventListener("click", () => {
+        state.debug.scaleY += Number(scaleStepEl.value) || 0;
+        afterAdjust();
+    });
+    document.getElementById("dbg-scale-y-down").addEventListener("click", () => {
+        state.debug.scaleY = Math.max(0.01, state.debug.scaleY - (Number(scaleStepEl.value) || 0));
+        afterAdjust();
+    });
+
+    document.getElementById("dbg-reset-all").addEventListener("click", () => {
+        state.debug.east = 0;
+        state.debug.north = 0;
+        state.debug.rotationDeg = 0;
+        state.debug.scaleX = 1;
+        state.debug.scaleY = 1;
+        afterAdjust();
+        debugSetStatus("Reset to original.");
+    });
+
+    document.getElementById("dbg-copy").addEventListener("click", async () => {
+        const key = document.getElementById("dbg-dataset").value;
+        if (!state.debug.originals) {
+            debugSetStatus("No GeoJSON loaded yet.", true);
+            return;
+        }
+        const text = JSON.stringify(debugCurrentDataset(key));
+        try {
+            await navigator.clipboard.writeText(text);
+            debugSetStatus(`Copied ${debugFilenameFor(key)} (${text.length.toLocaleString()} chars) to clipboard.`);
+        } catch (err) {
+            debugSetStatus(`Clipboard copy failed: ${err.message}`, true);
+        }
+    });
+
+    document.getElementById("dbg-download").addEventListener("click", () => {
+        const key = document.getElementById("dbg-dataset").value;
+        if (!state.debug.originals) {
+            debugSetStatus("No GeoJSON loaded yet.", true);
+            return;
+        }
+        const filename = debugFilenameFor(key);
+        debugDownload(filename, JSON.stringify(debugCurrentDataset(key)));
+        debugSetStatus(`Downloaded ${filename}. Save it over the original in the project root to persist.`);
+    });
+
+    document.getElementById("dbg-copy-all").addEventListener("click", async () => {
+        if (!state.debug.originals) {
+            debugSetStatus("No GeoJSON loaded yet.", true);
+            return;
+        }
+        const bundle = {};
+        for (const key of Object.keys(GEOJSON_FILES)) {
+            bundle[debugFilenameFor(key)] = debugCurrentDataset(key);
+        }
+        const text = JSON.stringify(bundle);
+        try {
+            await navigator.clipboard.writeText(text);
+            debugSetStatus(`Copied all 8 files as one JSON bundle (${text.length.toLocaleString()} chars).`);
+        } catch (err) {
+            debugSetStatus(`Clipboard copy failed: ${err.message}`, true);
+        }
+    });
 }
 
 /* ---------------------------------------------------------------------- */
-/* Building footprint + alignment report                                 */
+/* Building footprint                                                     */
 /* ---------------------------------------------------------------------- */
 
 async function loadBuilding(storeId) {
@@ -562,35 +680,7 @@ async function loadBuilding(storeId) {
     }
 }
 
-function formatMetersOrDash(v) {
-    return typeof v === "number" ? `${v.toFixed(1)} m` : "-";
-}
-
-async function refreshAlignmentReport(storeId) {
-    try {
-        const report = await fetchJSON(`/api/stores/${encodeURIComponent(storeId)}/alignment-report`);
-        if (report.status === "needs_calibration") {
-            document.getElementById("report-error").textContent = "needs building footprint";
-            document.getElementById("report-building-area").textContent = "-";
-            document.getElementById("report-floor-area").textContent = "-";
-            document.getElementById("report-rotation").textContent = "-";
-            document.getElementById("report-scale").textContent = "-";
-            return;
-        }
-        document.getElementById("report-error").textContent = formatMetersOrDash(report.alignment_error_m);
-        document.getElementById("report-building-area").textContent = `${report.building_area_m2.toFixed(1)} m²`;
-        document.getElementById("report-floor-area").textContent = `${report.floor_plan_area_m2.toFixed(1)} m²`;
-        document.getElementById("report-rotation").textContent = `${report.rotation_degrees.toFixed(1)}°`;
-        document.getElementById("report-scale").textContent =
-            `${report.scale_x.toFixed(3)} / ${report.scale_y.toFixed(3)}`;
-    } catch (err) {
-        console.warn("Failed to load alignment report:", err);
-    }
-}
-
 async function loadStore(storeId) {
-    if (state.calibrating) exitCalibration(false);
-
     const data = await fetchJSON(`/api/stores/${encodeURIComponent(storeId)}/map`);
     state.currentStoreId = storeId;
     state.currentStore = data.store;
@@ -638,406 +728,14 @@ async function loadStore(storeId) {
     updateZoomVisibility();
 
     await loadBuilding(storeId);
-    await refreshAlignmentReport(storeId);
 }
 
 /* ---------------------------------------------------------------------- */
-/* Calibration mode                                                       */
+/* Layer panel checkboxes                                                 */
 /* ---------------------------------------------------------------------- */
 
-const CAL_STEPS = {
-    scale_x: 0.005,
-    scale_y: 0.005,
-    rotation: 1,
-    offset_x: 0.5,
-    offset_y: 0.5,
-};
-
-function computeFloorBounds(layout) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    const depthByType = { Point: 0, LineString: 1, MultiLineString: 2, Polygon: 2, MultiPolygon: 3 };
-
-    function walk(node, depth) {
-        if (depth === 0) {
-            minX = Math.min(minX, node[0]); maxX = Math.max(maxX, node[0]);
-            minY = Math.min(minY, node[1]); maxY = Math.max(maxY, node[1]);
-            return;
-        }
-        for (const child of node) walk(child, depth - 1);
-    }
-
-    for (const key of ["departments", "aisles", "racks", "markers"]) {
-        for (const item of layout[key] || []) {
-            walk(item.geometry.coordinates, depthByType[item.geometry.type]);
-        }
-    }
-    return { minX, minY, maxX, maxY };
-}
-
-function floorToLatLonApprox(x, y, transform, anchor) {
-    // Client-side preview approximation (flat-earth / equirectangular).
-    // The authoritative transform (AEQD via pyproj) lives server-side in
-    // backend/transform.py and is what actually gets saved/rendered after
-    // "Save Calibration" - this is only for live drag/adjust feedback.
-    const mx = x * transform.scale_x;
-    const my = y * transform.scale_y;
-    const theta = (transform.rotation_degrees * Math.PI) / 180;
-    const rx = mx * Math.cos(theta) - my * Math.sin(theta);
-    const ry = mx * Math.sin(theta) + my * Math.cos(theta);
-    const east = rx + transform.offset_x;
-    const north = ry + transform.offset_y;
-
-    const metersPerDegLat = 111320;
-    const metersPerDegLon = 111320 * Math.cos((anchor.latitude * Math.PI) / 180);
-
-    return [anchor.latitude + north / metersPerDegLat, anchor.longitude + east / metersPerDegLon];
-}
-
-function walkGeometryToLatLng(geometry, transform, anchor) {
-    const conv = (pt) => floorToLatLonApprox(pt[0], pt[1], transform, anchor);
-    switch (geometry.type) {
-        case "Point":
-            return conv(geometry.coordinates);
-        case "LineString":
-            return geometry.coordinates.map(conv);
-        case "Polygon":
-        case "MultiLineString":
-            return geometry.coordinates.map((ring) => ring.map(conv));
-        case "MultiPolygon":
-            return geometry.coordinates.map((poly) => poly.map((ring) => ring.map(conv)));
-        default:
-            return null;
-    }
-}
-
-function renderPreview() {
-    const layout = state.rawLayout;
-    const cal = state.calValues;
-    if (!layout || !cal) return;
-
-    state.layers.preview.clearLayers();
-    const anchor = { latitude: cal.anchor_latitude, longitude: cal.anchor_longitude };
-    const transform = {
-        scale_x: cal.scale_x,
-        scale_y: cal.scale_y,
-        rotation_degrees: cal.rotation_degrees,
-        offset_x: cal.offset_x,
-        offset_y: cal.offset_y,
-    };
-
-    for (const dept of layout.departments) {
-        const latlngs = walkGeometryToLatLng(dept.geometry, transform, anchor);
-        L.polygon(latlngs, { color: "#BCDDF4", weight: 2, fillColor: "#9BCBEB", fillOpacity: 0.35 })
-            .bindTooltip(dept.label || dept.name, { permanent: true, direction: "center", className: "dept-label" })
-            .addTo(state.layers.preview);
-    }
-    for (const marker of layout.markers) {
-        const [lat, lon] = walkGeometryToLatLng(marker.geometry, transform, anchor);
-        const emoji = iconFor(marker.category, marker.marker_type);
-        L.marker([lat, lon], {
-            icon: L.divIcon({
-                className: "",
-                html: `<div class="marker-icon ${marker.category}">${emoji}</div>`,
-                iconSize: [22, 22],
-                iconAnchor: [11, 11],
-            }),
-        }).addTo(state.layers.preview);
-    }
-}
-
-function updateCalDisplay() {
-    document.getElementById("val-scale_x").textContent = state.calValues.scale_x.toFixed(3);
-    document.getElementById("val-scale_y").textContent = state.calValues.scale_y.toFixed(3);
-    document.getElementById("val-rotation").textContent = `${Math.round(state.calValues.rotation_degrees)}°`;
-    document.getElementById("val-offset_x").textContent = state.calValues.offset_x.toFixed(1);
-    document.getElementById("val-offset_y").textContent = state.calValues.offset_y.toFixed(1);
-}
-
-/* ---------------------------------------------------------------------- */
-/* SVG floor-plan calibration                                            */
-/* ---------------------------------------------------------------------- */
-
-function updateSvgCalDisplay() {
-    if (!state.svgCalValues) return;
-    document.getElementById("svg-val-scale").textContent = state.svgCalValues.scale.toFixed(3);
-    document.getElementById("svg-val-rotation").textContent = `${Math.round(state.svgCalValues.rotation_degrees)}°`;
-    document.getElementById("svg-val-offset_x").textContent = state.svgCalValues.offset_x.toFixed(1);
-    document.getElementById("svg-val-offset_y").textContent = state.svgCalValues.offset_y.toFixed(1);
-    document.getElementById("svg-opacity").value = state.svgCalValues.opacity;
-}
-
-function svgReferenceCornersApprox(cal, anchor, width, height) {
-    // Same flat-earth preview approximation used for the GeoJSON preview
-    // (floorToLatLonApprox) - live calibration feedback only. The
-    // authoritative AEQD corners come from the server after saving.
-    const transform = {
-        scale_x: cal.scale, scale_y: cal.scale,
-        rotation_degrees: cal.rotation_degrees, offset_x: cal.offset_x, offset_y: cal.offset_y,
-    };
-    const toPoint = ([lat, lon]) => ({ latitude: lat, longitude: lon });
-    return {
-        top_left: toPoint(floorToLatLonApprox(0, 0, transform, anchor)),
-        top_right: toPoint(floorToLatLonApprox(width, 0, transform, anchor)),
-        bottom_left: toPoint(floorToLatLonApprox(0, height, transform, anchor)),
-    };
-}
-
-function renderSvgPreview() {
-    if (!state.layers.svgFloorplan || !state.floorplan || !state.svgCalValues) return;
-    const anchor = { latitude: state.rawLayout.anchor.latitude, longitude: state.rawLayout.anchor.longitude };
-    const corners = svgReferenceCornersApprox(state.svgCalValues, anchor, state.floorplan.width, state.floorplan.height);
-    state.layers.svgFloorplan.setCorners(corners);
-    state.layers.svgFloorplan.setOpacity(state.svgCalValues.opacity);
-}
-
-async function runSvgAutoAlign() {
-    const statusEl = document.getElementById("svg-status");
-    if (!state.floorplan) {
-        statusEl.textContent = "No SVG floor plan registered for this store.";
-        statusEl.className = "err";
-        return;
-    }
-    try {
-        const result = await fetchJSON(
-            `/api/stores/${encodeURIComponent(state.currentStoreId)}/auto-align`,
-            { method: "POST" }
-        );
-        if (result.status === "needs_calibration" || !result.svg_transform) {
-            statusEl.textContent = `Auto align unavailable: ${result.reason || "no SVG registered"}`;
-            statusEl.className = "err";
-            return;
-        }
-        const t = result.svg_transform;
-        state.svgCalValues.scale = t.scale_x != null ? t.scale_x : t.scale;
-        state.svgCalValues.rotation_degrees = t.rotation_degrees;
-        state.svgCalValues.offset_x = t.offset_x;
-        state.svgCalValues.offset_y = t.offset_y;
-        updateSvgCalDisplay();
-        renderSvgPreview();
-
-        statusEl.textContent = `Auto align: IoU ${result.svg_iou.toFixed(2)}. Review the overlay, then Save SVG Calibration.`;
-        statusEl.className = "ok";
-    } catch (err) {
-        statusEl.textContent = `Auto align failed: ${err.message}`;
-        statusEl.className = "err";
-    }
-}
-
-async function saveSvgCalibration() {
-    const statusEl = document.getElementById("svg-status");
-    if (!state.floorplan) {
-        statusEl.textContent = "No SVG floor plan registered for this store.";
-        statusEl.className = "err";
-        return;
-    }
-    try {
-        const existing = await fetchJSON(`/api/stores/${encodeURIComponent(state.currentStoreId)}/georeference`);
-        const cal = state.svgCalValues;
-        const body = {
-            store_id: state.currentStoreId,
-            source: existing.source || "manual",
-            control_points: existing.control_points || [],
-            svg: {
-                file: state.floorplan.file.split("/").pop(),
-                width: state.floorplan.width,
-                height: state.floorplan.height,
-            },
-            transform: {
-                scale: 1.0,
-                scale_x: cal.scale,
-                scale_y: cal.scale,
-                rotation_degrees: cal.rotation_degrees,
-                offset_x: cal.offset_x,
-                offset_y: cal.offset_y,
-            },
-            svg_opacity: cal.opacity,
-            corners: existing.corners || {},
-        };
-        await fetchJSON(`/api/stores/${encodeURIComponent(state.currentStoreId)}/georeference`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-        statusEl.textContent = "SVG calibration saved.";
-        statusEl.className = "ok";
-        await loadFloorplan(state.currentStoreId);
-        if (document.getElementById("layer-svg-floorplan").checked && state.layers.svgFloorplan) {
-            state.layers.svgFloorplan.addTo(state.map);
-        }
-    } catch (err) {
-        statusEl.textContent = `Save failed: ${err.message}`;
-        statusEl.className = "err";
-    }
-}
-
-async function enterCalibration() {
-    if (!state.currentStoreId) return;
-    state.rawLayout = await fetchJSON(`/api/stores/${encodeURIComponent(state.currentStoreId)}/layout/raw`);
-    state.floorBounds = computeFloorBounds(state.rawLayout);
-
-    const t = state.rawLayout.transform;
-    state.calValues = {
-        anchor_latitude: state.rawLayout.anchor.latitude,
-        anchor_longitude: state.rawLayout.anchor.longitude,
-        scale: t.scale,
-        scale_x: t.scale_x != null ? t.scale_x : t.scale,
-        scale_y: t.scale_y != null ? t.scale_y : t.scale,
-        rotation_degrees: t.rotation_degrees,
-        offset_x: t.offset_x,
-        offset_y: t.offset_y,
-    };
-    if (state.floorplan && state.floorplan.transform) {
-        const st = state.floorplan.transform;
-        state.svgCalValues = {
-            scale: st.scale_x != null ? st.scale_x : st.scale,
-            rotation_degrees: st.rotation_degrees,
-            offset_x: st.offset_x,
-            offset_y: st.offset_y,
-            opacity: state.floorplan.opacity != null ? state.floorplan.opacity : 1.0,
-        };
-    } else {
-        state.svgCalValues = { scale: 1.0, rotation_degrees: 0.0, offset_x: 0.0, offset_y: 0.0, opacity: 0.85 };
-    }
-    updateSvgCalDisplay();
-
-    state.calibrating = true;
-
-    setLayerGroupVisible(state.layers.departments, state.map, false);
-    setLayerGroupVisible(state.layers.deptLabels, state.map, false);
-    setLayerGroupVisible(state.layers.aisles, state.map, false);
-    setLayerGroupVisible(state.layers.aisleLabels, state.map, false);
-    setLayerGroupVisible(state.layers.racks, state.map, false);
-    setLayerGroupVisible(state.layers.departmentLines, state.map, false);
-    setLayerGroupVisible(state.layers.aisleLines, state.map, false);
-    setLayerGroupVisible(state.layers.rackLines, state.map, false);
-    setLayerGroupVisible(state.layers.rackLabels, state.map, false);
-    setLayerGroupVisible(state.layers.markerGroup, state.map, false);
-
-    document.getElementById("calibration-panel").classList.add("open");
-    document.getElementById("calibrate-toggle").classList.add("active");
-    updateCalDisplay();
-    renderPreview();
-    await loadControlPoints();
-}
-
-function exitCalibration(reloadAfter = true) {
-    state.calibrating = false;
-    state.layers.preview.clearLayers();
-    document.getElementById("calibration-panel").classList.remove("open");
-    document.getElementById("calibrate-toggle").classList.remove("active");
-    document.getElementById("cal-status").textContent = "";
-    document.getElementById("cal-status").className = "";
-
-    if (reloadAfter && state.currentStoreId) {
-        updateZoomVisibility();
-    } else {
-        setLayerGroupVisible(state.layers.departments, state.map, true);
-        setLayerGroupVisible(state.layers.markerGroup, state.map, true);
-        updateZoomVisibility();
-    }
-}
-
-async function saveCalibration() {
-    const statusEl = document.getElementById("cal-status");
-    try {
-        const result = await fetchJSON(
-            `/api/stores/${encodeURIComponent(state.currentStoreId)}/calibrate`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(state.calValues),
-            }
-        );
-        statusEl.textContent = "Calibration saved.";
-        statusEl.className = "ok";
-        exitCalibration(false);
-        await loadStore(state.currentStoreId);
-    } catch (err) {
-        statusEl.textContent = `Save failed: ${err.message}`;
-        statusEl.className = "err";
-    }
-}
-
-async function runAutoAlign() {
-    const statusEl = document.getElementById("cal-status");
-    try {
-        const result = await fetchJSON(
-            `/api/stores/${encodeURIComponent(state.currentStoreId)}/auto-align`,
-            { method: "POST" }
-        );
-        if (result.status === "needs_calibration") {
-            statusEl.textContent = `Auto align unavailable: ${result.reason}`;
-            statusEl.className = "err";
-            return;
-        }
-        const t = result.transform;
-        state.calValues.scale_x = t.scale_x != null ? t.scale_x : t.scale;
-        state.calValues.scale_y = t.scale_y != null ? t.scale_y : t.scale;
-        state.calValues.rotation_degrees = t.rotation_degrees;
-        state.calValues.offset_x = t.offset_x;
-        state.calValues.offset_y = t.offset_y;
-        updateCalDisplay();
-        renderPreview();
-
-        statusEl.textContent =
-            `Auto align: error ${result.alignment_error_m.toFixed(1)} m, IoU ${result.iou.toFixed(2)}. ` +
-            `Review the overlay, then Save Calibration.`;
-        statusEl.className = "ok";
-    } catch (err) {
-        statusEl.textContent = `Auto align failed: ${err.message}`;
-        statusEl.className = "err";
-    }
-}
-
-function wireCalibrationControls() {
-    document.getElementById("calibrate-toggle").addEventListener("click", () => {
-        if (state.calibrating) {
-            exitCalibration(false);
-        } else {
-            enterCalibration();
-        }
-    });
-
-    document.querySelectorAll("[data-adjust]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            const key = btn.dataset.adjust;
-            const dir = Number(btn.dataset.dir);
-            const field = key === "rotation" ? "rotation_degrees" : key;
-            const step = CAL_STEPS[key];
-            let next = state.calValues[field] + dir * step;
-            if (field === "scale_x" || field === "scale_y") next = Math.max(0.001, next);
-            state.calValues[field] = next;
-            updateCalDisplay();
-            renderPreview();
-        });
-    });
-
-    document.getElementById("cal-save").addEventListener("click", saveCalibration);
-    document.getElementById("cal-auto-align").addEventListener("click", runAutoAlign);
-
-    document.getElementById("cp-add").addEventListener("click", addControlPointFromForm);
-    document.getElementById("cp-save").addEventListener("click", saveControlPoints);
-
-    const SVG_CAL_STEPS = { scale: 0.005, rotation: 1, offset_x: 0.5, offset_y: 0.5 };
-    document.querySelectorAll("[data-svg-adjust]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            const key = btn.dataset.svgAdjust;
-            const dir = Number(btn.dataset.dir);
-            const field = key === "rotation" ? "rotation_degrees" : key;
-            let next = state.svgCalValues[field] + dir * SVG_CAL_STEPS[key];
-            if (field === "scale") next = Math.max(0.001, next);
-            state.svgCalValues[field] = next;
-            updateSvgCalDisplay();
-            renderSvgPreview();
-        });
-    });
-    document.getElementById("svg-opacity").addEventListener("input", (e) => {
-        state.svgCalValues.opacity = parseFloat(e.target.value);
-        if (state.layers.svgFloorplan) state.layers.svgFloorplan.setOpacity(state.svgCalValues.opacity);
-    });
-    document.getElementById("svg-auto-align").addEventListener("click", runSvgAutoAlign);
-    document.getElementById("svg-save").addEventListener("click", saveSvgCalibration);
-    document.getElementById("layer-svg-floorplan").addEventListener("change", (e) => {
+function wireLayerControls() {
+    document.getElementById("layer-outlines").addEventListener("change", (e) => {
         const visible = e.target.checked;
         setLayerVisible(state.layers.departmentLines, state.map, visible);
         setLayerVisible(state.layers.aisleLines, state.map, visible && state.map.getZoom() >= ZOOM.DEPT_LABELS_ALL);
@@ -1065,125 +763,6 @@ function wireCalibrationControls() {
             updateZoomVisibility();
         }
     });
-    document.getElementById("layer-controlpoints").addEventListener("change", (e) => {
-        setLayerVisible(state.layers.controlPoints, state.map, e.target.checked);
-    });
-}
-
-/* ---------------------------------------------------------------------- */
-/* Control point editor                                                  */
-/* ---------------------------------------------------------------------- */
-
-function floorCornerCoords(name) {
-    const b = state.floorBounds;
-    if (!b) return { x: 0, y: 0 };
-    switch (name) {
-        case "northwest": return { x: b.minX, y: b.minY };
-        case "northeast": return { x: b.maxX, y: b.minY };
-        case "southeast": return { x: b.maxX, y: b.maxY };
-        case "southwest": return { x: b.minX, y: b.maxY };
-        default: return { x: b.minX, y: b.minY };
-    }
-}
-
-function renderControlPointMarkers() {
-    state.layers.controlPoints.clearLayers();
-    for (const cp of state.controlPoints) {
-        L.marker([cp.geo.latitude, cp.geo.longitude], {
-            icon: L.divIcon({
-                className: "",
-                html: `<div class="cp-marker">${cp.name.slice(0, 2).toUpperCase()}</div>`,
-                iconSize: [20, 20],
-                iconAnchor: [10, 10],
-            }),
-        })
-            .bindPopup(`<b>${cp.name}</b>floor (${cp.floor.x}, ${cp.floor.y})`)
-            .addTo(state.layers.controlPoints);
-    }
-}
-
-function renderControlPointList() {
-    const list = document.getElementById("cp-list");
-    list.innerHTML = "";
-    for (const cp of state.controlPoints) {
-        const li = document.createElement("li");
-        li.innerHTML = `<span>${cp.name}: ${cp.geo.latitude.toFixed(5)}, ${cp.geo.longitude.toFixed(5)}</span>`;
-        const removeBtn = document.createElement("button");
-        removeBtn.textContent = "✕";
-        removeBtn.addEventListener("click", () => {
-            state.controlPoints = state.controlPoints.filter((p) => p.name !== cp.name);
-            renderControlPointList();
-            renderControlPointMarkers();
-        });
-        li.appendChild(removeBtn);
-        list.appendChild(li);
-    }
-}
-
-async function loadControlPoints() {
-    state.controlPoints = [];
-    try {
-        const data = await fetchJSON(`/api/stores/${encodeURIComponent(state.currentStoreId)}/georeference`);
-        if (data.status !== "needs_calibration" && Array.isArray(data.control_points)) {
-            state.controlPoints = data.control_points;
-        }
-    } catch (err) {
-        console.warn("Failed to load control points:", err);
-    }
-    renderControlPointList();
-    renderControlPointMarkers();
-}
-
-function addControlPointFromForm() {
-    const name = document.getElementById("cp-floor-point").value;
-    const lat = parseFloat(document.getElementById("cp-lat").value);
-    const lon = parseFloat(document.getElementById("cp-lon").value);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-        document.getElementById("cp-status").textContent = "Enter a valid latitude and longitude.";
-        document.getElementById("cp-status").className = "err";
-        return;
-    }
-    const floor = floorCornerCoords(name);
-    state.controlPoints = state.controlPoints.filter((p) => p.name !== name);
-    state.controlPoints.push({ name, floor, geo: { latitude: lat, longitude: lon } });
-    renderControlPointList();
-    renderControlPointMarkers();
-    document.getElementById("cp-status").textContent = "";
-}
-
-async function saveControlPoints() {
-    const statusEl = document.getElementById("cp-status");
-    try {
-        const result = await fetchJSON(
-            `/api/stores/${encodeURIComponent(state.currentStoreId)}/georeference`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    store_id: state.currentStoreId,
-                    source: "manual",
-                    control_points: state.controlPoints,
-                }),
-            }
-        );
-        if (result.fitted_transform) {
-            const t = result.fitted_transform;
-            state.calValues.scale_x = t.scale_x;
-            state.calValues.scale_y = t.scale_y;
-            state.calValues.rotation_degrees = t.rotation_degrees;
-            state.calValues.offset_x = t.offset_x;
-            state.calValues.offset_y = t.offset_y;
-            updateCalDisplay();
-            renderPreview();
-            statusEl.textContent = `Saved. Fitted transform applied (rms ${t.rms_error_m.toFixed(2)} m) - review, then Save Calibration.`;
-        } else {
-            statusEl.textContent = "Control points saved. Add at least 2 to compute a fitted transform.";
-        }
-        statusEl.className = "ok";
-    } catch (err) {
-        statusEl.textContent = `Save failed: ${err.message}`;
-        statusEl.className = "err";
-    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1192,7 +771,8 @@ async function saveControlPoints() {
 
 document.addEventListener("DOMContentLoaded", async () => {
     initMap();
-    wireCalibrationControls();
+    wireLayerControls();
+    wireDebugControls();
     try {
         await loadStores();
     } catch (err) {
