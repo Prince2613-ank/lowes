@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lowe's Interactive Store Map</title>
+
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""
+    />
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+    <div id="topbar">
+        <div class="brand">Lowe's Store Map</div>
+        <select id="store-select"></select>
+        <div id="store-meta"></div>
+        <button id="calibrate-toggle" title="Calibrate floor plan alignment">Calibrate</button>
+    </div>
+
+    <div id="map"></div>
+
+    <div id="layer-panel">
+        <h3>Layers</h3>
+        <label class="layer-row"><input type="checkbox" id="layer-satellite" /> Satellite basemap</label>
+        <label class="layer-row"><input type="checkbox" id="layer-building" checked /> Building footprint</label>
+        <label class="layer-row"><input type="checkbox" id="layer-svg-floorplan" checked /> SVG floor plan</label>
+        <label class="layer-row"><input type="checkbox" id="layer-floorplan" checked /> Departments/aisles/racks</label>
+        <label class="layer-row"><input type="checkbox" id="layer-controlpoints" /> Control points</label>
+    </div>
+
+    <div id="calibration-panel">
+        <h3>SVG Floor Plan</h3>
+
+        <div class="cal-row">
+            <label>Scale</label>
+            <div class="cal-controls">
+                <button data-svg-adjust="scale" data-dir="-1">-</button>
+                <span class="cal-value" id="svg-val-scale">1.000</span>
+                <button data-svg-adjust="scale" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <div class="cal-row">
+            <label>Rotation</label>
+            <div class="cal-controls">
+                <button data-svg-adjust="rotation" data-dir="-1">-</button>
+                <span class="cal-value" id="svg-val-rotation">0°</span>
+                <button data-svg-adjust="rotation" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <div class="cal-row">
+            <label>X offset</label>
+            <div class="cal-controls">
+                <button data-svg-adjust="offset_x" data-dir="-1">-</button>
+                <span class="cal-value" id="svg-val-offset_x">0</span>
+                <button data-svg-adjust="offset_x" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <div class="cal-row">
+            <label>Y offset</label>
+            <div class="cal-controls">
+                <button data-svg-adjust="offset_y" data-dir="-1">-</button>
+                <span class="cal-value" id="svg-val-offset_y">0</span>
+                <button data-svg-adjust="offset_y" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <div class="cal-row">
+            <label>Opacity</label>
+            <input type="range" id="svg-opacity" min="0" max="1" step="0.05" value="0.85" style="flex:1" />
+        </div>
+
+        <button id="svg-auto-align">Auto Align SVG</button>
+        <button id="svg-save">Save SVG Calibration</button>
+        <div id="svg-status"></div>
+
+        <h3>Department Layout Calibration</h3>
+
+        <div class="cal-row">
+            <label>Scale X</label>
+            <div class="cal-controls">
+                <button data-adjust="scale_x" data-dir="-1">-</button>
+                <span class="cal-value" id="val-scale_x">1.00</span>
+                <button data-adjust="scale_x" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <div class="cal-row">
+            <label>Scale Y</label>
+            <div class="cal-controls">
+                <button data-adjust="scale_y" data-dir="-1">-</button>
+                <span class="cal-value" id="val-scale_y">1.00</span>
+                <button data-adjust="scale_y" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <div class="cal-row">
+            <label>Rotation</label>
+            <div class="cal-controls">
+                <button data-adjust="rotation" data-dir="-1">-</button>
+                <span class="cal-value" id="val-rotation">0°</span>
+                <button data-adjust="rotation" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <div class="cal-row">
+            <label>X offset</label>
+            <div class="cal-controls">
+                <button data-adjust="offset_x" data-dir="-1">-</button>
+                <span class="cal-value" id="val-offset_x">0</span>
+                <button data-adjust="offset_x" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <div class="cal-row">
+            <label>Y offset</label>
+            <div class="cal-controls">
+                <button data-adjust="offset_y" data-dir="-1">-</button>
+                <span class="cal-value" id="val-offset_y">0</span>
+                <button data-adjust="offset_y" data-dir="1">+</button>
+            </div>
+        </div>
+
+        <button id="cal-auto-align">Auto Align</button>
+        <button id="cal-save">Save Calibration</button>
+        <div id="cal-status"></div>
+
+        <div id="alignment-report">
+            <div class="align-row"><span>Alignment error</span><span id="report-error">-</span></div>
+            <div class="align-row"><span>Building area</span><span id="report-building-area">-</span></div>
+            <div class="align-row"><span>Floor plan area</span><span id="report-floor-area">-</span></div>
+            <div class="align-row"><span>Rotation</span><span id="report-rotation">-</span></div>
+            <div class="align-row"><span>Scale (x / y)</span><span id="report-scale">-</span></div>
+        </div>
+
+        <h3>Control Points</h3>
+        <div class="cp-row">
+            <select id="cp-floor-point">
+                <option value="northwest">Floor NW corner</option>
+                <option value="northeast">Floor NE corner</option>
+                <option value="southeast">Floor SE corner</option>
+                <option value="southwest">Floor SW corner</option>
+            </select>
+        </div>
+        <div class="cp-row">
+            <input type="number" step="any" id="cp-lat" placeholder="Latitude" />
+            <input type="number" step="any" id="cp-lon" placeholder="Longitude" />
+        </div>
+        <button id="cp-add">Add Control Point</button>
+        <ul id="cp-list"></ul>
+        <button id="cp-save">Save Control Points</button>
+        <div id="cp-status"></div>
+    </div>
+
+    <script
+        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""
+    ></script>
+    <script src="app.js"></script>
+</body>
+</html>
