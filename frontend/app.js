@@ -324,18 +324,7 @@ async function fetchJSON(url, options) {
 
 async function loadStores() {
     state.stores = await fetchJSON("/api/stores");
-    const select = document.getElementById("store-select");
-    select.innerHTML = "";
-    for (const store of state.stores) {
-        const opt = document.createElement("option");
-        opt.value = store.store_id;
-        opt.textContent = `${store.name} #${store.store_id}`;
-        select.appendChild(opt);
-    }
-    select.addEventListener("change", () => loadStore(select.value));
-
     if (state.stores.length > 0) {
-        select.value = state.stores[0].store_id;
         await loadStore(state.stores[0].store_id);
     }
 }
@@ -407,8 +396,6 @@ async function loadStore(storeId) {
     state.currentStoreId = storeId;
     state.currentStore = data.store;
 
-    document.getElementById("store-meta").textContent = data.store.address;
-
     clearFeatureLayers();
 
     await loadGeoJsonFloorplan();
@@ -476,6 +463,5 @@ document.addEventListener("DOMContentLoaded", async () => {
         await loadStores();
     } catch (err) {
         console.error("Failed to load stores:", err);
-        document.getElementById("store-meta").textContent = "Failed to load store directory.";
     }
 });

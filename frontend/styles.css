@@ -40,22 +40,6 @@ html, body {
     white-space: nowrap;
 }
 
-#store-select {
-    flex: 0 1 360px;
-    padding: 6px 10px;
-    border-radius: 4px;
-    border: none;
-    font-size: 14px;
-}
-
-#store-meta {
-    font-size: 12px;
-    opacity: 0.9;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 /* ---------------------------------------------------------------------- */
 /* Department polygons                                                    */
 /* ---------------------------------------------------------------------- */
