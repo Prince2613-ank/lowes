@@ -100,14 +100,15 @@ const state = {
 function initMap() {
     const map = L.map("map", { zoomControl: true }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
-    // Base layers - OpenStreetMap (default) and Esri World Imagery satellite,
-    // both public tile services requiring no API key. Only one is shown at a
-    // time; toggled via the "Satellite basemap" checkbox in the layer panel.
+    // Base layers - OpenStreetMap and Esri World Imagery satellite, both
+    // public tile services requiring no API key. Only one is shown at a
+    // time; toggled via the "Satellite basemap" checkbox in the layer panel,
+    // which is checked by default, so satellite is the initial basemap.
     state.layers.osmTile = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 23,
         maxNativeZoom: 19,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    }).addTo(map);
+    });
 
     state.layers.satelliteTile = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -116,7 +117,7 @@ function initMap() {
             maxNativeZoom: 19,
             attribution: "Tiles &copy; Esri",
         }
-    );
+    ).addTo(map);
 
     state.layers.departments = L.geoJSON(null, { style: departmentStyle, onEachFeature: onEachDepartment }).addTo(map);
     state.layers.deptLabels = L.layerGroup().addTo(map);
