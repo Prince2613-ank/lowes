@@ -1,10 +1,8 @@
 /* ==========================================================================
  * Lowe's Interactive Store Map - frontend application logic.
  *
- * Talks to the FastAPI backend for the store directory, renders the raw
- * Lowes_*.geojson floor plan on a Leaflet map over OpenStreetMap tiles, and
- * provides a Debug panel that live-transforms (move/rotate/scale) that
- * GeoJSON and lets you copy/download the result.
+ * Talks to the FastAPI backend for the store directory and renders the raw
+ * Lowes_*.geojson floor plan on a Leaflet map over OpenStreetMap tiles.
  * ========================================================================== */
 
 const DEFAULT_CENTER = [41.8140843218019, -72.71526758866406];
@@ -90,23 +88,8 @@ const state = {
         rackLabels: null,
         markers: null,   // array of {layer, minZoom}
         storePin: null,
-        building: null,
         osmTile: null,
         satelliteTile: null,
-        geojsonFloorplan: null,
-    },
-
-    building: null,       // raw building GeoJSON for the current store, or null if unavailable
-
-    debug: {
-        active: false,
-        originals: null,    // pristine fetched GeoJSON for all 8 GEOJSON_FILES keys, keyed the same way
-        anchor: null,       // {latitude, longitude} pivot for the live transform
-        east: 0,            // cumulative move, meters
-        north: 0,
-        rotationDeg: 0,     // cumulative rotation, degrees
-        scaleX: 1,          // cumulative scale, east-west
-        scaleY: 1,          // cumulative scale, north-south
     },
 };
 
@@ -134,12 +117,6 @@ function initMap() {
             attribution: "Tiles &copy; Esri",
         }
     );
-
-    // Building footprint (real-world GeoJSON) - drawn under the floor plan.
-    state.layers.building = L.geoJSON(null, {
-        style: buildingStyle,
-        onEachFeature: onEachBuilding,
-    }).addTo(map);
 
     state.layers.departments = L.geoJSON(null, { style: departmentStyle, onEachFeature: onEachDepartment }).addTo(map);
     state.layers.deptLabels = L.layerGroup().addTo(map);
@@ -195,17 +172,6 @@ function geoJsonStyle(defaults, feature = null) {
         fillColor: props.fill || defaults.fillColor,
         fillOpacity: Number.isFinite(fillOpacity) ? fillOpacity : defaults.fillOpacity,
     };
-}
-
-function buildingStyle() {
-    return { color: "#ff0000", weight: 2, fill: false };
-}
-
-function onEachBuilding(feature, layer) {
-    const props = feature.properties || {};
-    layer.bindPopup(`<b>${props.type === "store_building" ? "Building footprint" : "Building"}</b>${
-        props.source ? `Source: ${props.source}` : ""
-    }`);
 }
 
 function onEachDepartment(feature, layer) {
@@ -308,24 +274,26 @@ function updateZoomVisibility() {
     if (!state.map) return;
     const zoom = state.map.getZoom();
     const map = state.map;
-    const floorVisible = document.getElementById("layer-floorplan").checked;
-    const outlinesVisible = document.getElementById("layer-outlines").checked;
+    const deptVisible = document.getElementById("layer-department").checked;
+    const aisleVisible = document.getElementById("layer-aisle").checked;
+    const rackVisible = document.getElementById("layer-rack").checked;
 
-    setLayerGroupVisible(state.layers.deptLabels, map, floorVisible && zoom >= ZOOM.DEPT_LABELS);
-    setLayerGroupVisible(state.layers.aisleLabels, map, floorVisible && zoom >= ZOOM.AISLE_LABELS);
-    setLayerGroupVisible(state.layers.rackLabels, map, floorVisible && zoom >= ZOOM.RACK_DETAIL);
+    setLayerGroupVisible(state.layers.deptLabels, map, deptVisible && zoom >= ZOOM.DEPT_LABELS);
+    setLayerGroupVisible(state.layers.aisleLabels, map, aisleVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerGroupVisible(state.layers.rackLabels, map, rackVisible && zoom >= ZOOM.RACK_DETAIL);
 
     // Aisle geometry itself becomes visible a level before its labels do,
     // and rack geometry a level before rack labels/info.
-    setLayerVisible(state.layers.departments, map, floorVisible);
-    setLayerVisible(state.layers.aisles, map, floorVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
-    setLayerVisible(state.layers.racks, map, floorVisible && zoom >= ZOOM.AISLE_LABELS);
-    setLayerVisible(state.layers.departmentLines, map, outlinesVisible);
-    setLayerVisible(state.layers.aisleLines, map, outlinesVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
-    setLayerVisible(state.layers.rackLines, map, outlinesVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerVisible(state.layers.departments, map, deptVisible);
+    setLayerVisible(state.layers.departmentLines, map, deptVisible);
+    setLayerVisible(state.layers.aisles, map, aisleVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
+    setLayerVisible(state.layers.aisleLines, map, aisleVisible && zoom >= ZOOM.DEPT_LABELS_ALL);
+    setLayerVisible(state.layers.racks, map, rackVisible && zoom >= ZOOM.AISLE_LABELS);
+    setLayerVisible(state.layers.rackLines, map, rackVisible && zoom >= ZOOM.AISLE_LABELS);
 
+    setLayerGroupVisible(state.layers.markerGroup, map, deptVisible);
     for (const { layer, minZoom } of state.layers.markers) {
-        setLayerVisible(layer, map, floorVisible && zoom >= minZoom);
+        setLayerVisible(layer, map, deptVisible && zoom >= minZoom);
     }
 }
 
@@ -383,7 +351,6 @@ function clearFeatureLayers() {
     state.layers.rackLabels.clearLayers();
     state.layers.markerGroup.clearLayers();
     state.layers.markers = [];
-    state.layers.building.clearLayers();
 }
 
 async function loadGeoJsonFloorplan() {
@@ -391,20 +358,6 @@ async function loadGeoJsonFloorplan() {
     await Promise.all(Object.entries(GEOJSON_FILES).map(async ([key, url]) => {
         data[key] = await fetchJSON(url);
     }));
-
-    // Keep a pristine copy + the pivot anchor for the live Debug panel
-    // (see wireDebugControls / renderDebugGeoJson below) - independent of
-    // whatever the currently-rendered (possibly debug-transformed) state is.
-    state.debug.originals = JSON.parse(JSON.stringify(data));
-    state.debug.anchor = state.currentStore
-        ? { latitude: state.currentStore.latitude, longitude: state.currentStore.longitude }
-        : null;
-    state.debug.east = 0;
-    state.debug.north = 0;
-    state.debug.rotationDeg = 0;
-    state.debug.scaleX = 1;
-    state.debug.scaleY = 1;
-    updateDebugReadout();
 
     renderGeoJsonFloorplanData(data);
 
@@ -445,238 +398,6 @@ function renderGeoJsonFloorplanData(data) {
         const point = buildGeoJsonPointLayer(feature);
         point.layer._minZoom = ZOOM.AISLE_LABELS;
         state.layers.aisleLabels.addLayer(point.layer);
-    }
-}
-
-/* ---------------------------------------------------------------------- */
-/* Debug panel: live move/rotate/scale of the raw GeoJSON floor plan      */
-/* ---------------------------------------------------------------------- */
-
-function debugMetersPerDeg(anchor) {
-    return {
-        lat: 111320,
-        lon: 111320 * Math.cos((anchor.latitude * Math.PI) / 180),
-    };
-}
-
-function debugTransformLonLat(lon, lat) {
-    const anchor = state.debug.anchor;
-    const mpd = debugMetersPerDeg(anchor);
-    let east = (lon - anchor.longitude) * mpd.lon;
-    let north = (lat - anchor.latitude) * mpd.lat;
-
-    // scale (independently per axis), then rotate about the anchor, then translate
-    east *= state.debug.scaleX;
-    north *= state.debug.scaleY;
-    const theta = (state.debug.rotationDeg * Math.PI) / 180;
-    const rEast = east * Math.cos(theta) - north * Math.sin(theta);
-    const rNorth = east * Math.sin(theta) + north * Math.cos(theta);
-    east = rEast + state.debug.east;
-    north = rNorth + state.debug.north;
-
-    return [anchor.longitude + east / mpd.lon, anchor.latitude + north / mpd.lat];
-}
-
-function debugTransformCoords(coords) {
-    if (typeof coords[0] === "number") {
-        return debugTransformLonLat(coords[0], coords[1]);
-    }
-    return coords.map(debugTransformCoords);
-}
-
-function debugTransformFeatureCollection(fc) {
-    const clone = JSON.parse(JSON.stringify(fc));
-    for (const feature of clone.features || []) {
-        if (feature.geometry && feature.geometry.coordinates) {
-            feature.geometry.coordinates = debugTransformCoords(feature.geometry.coordinates);
-        }
-    }
-    return clone;
-}
-
-function debugCurrentDataset(key) {
-    return debugTransformFeatureCollection(state.debug.originals[key]);
-}
-
-function debugCurrentAllDatasets() {
-    const out = {};
-    for (const key of Object.keys(GEOJSON_FILES)) out[key] = debugCurrentDataset(key);
-    return out;
-}
-
-function renderDebugGeoJson() {
-    if (!state.debug.originals || !state.debug.anchor) return;
-    renderGeoJsonFloorplanData(debugCurrentAllDatasets());
-}
-
-function updateDebugReadout() {
-    document.getElementById("dbg-east").textContent = `${state.debug.east.toFixed(2)} m`;
-    document.getElementById("dbg-north").textContent = `${state.debug.north.toFixed(2)} m`;
-    document.getElementById("dbg-rotation").textContent = `${state.debug.rotationDeg.toFixed(1)}°`;
-    document.getElementById("dbg-scale-x").textContent = state.debug.scaleX.toFixed(3);
-    document.getElementById("dbg-scale-y").textContent = state.debug.scaleY.toFixed(3);
-}
-
-function debugSetStatus(msg, isErr) {
-    const el = document.getElementById("dbg-status");
-    el.textContent = msg;
-    el.className = isErr ? "err" : "";
-}
-
-function debugFilenameFor(key) {
-    return GEOJSON_FILES[key].split("/").pop();
-}
-
-function debugDownload(filename, content) {
-    const blob = new Blob([content], { type: "application/geo+json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-}
-
-function wireDebugControls() {
-    const toggle = document.getElementById("debug-toggle");
-    const panel = document.getElementById("debug-panel");
-
-    toggle.addEventListener("click", () => {
-        state.debug.active = !state.debug.active;
-        toggle.classList.toggle("active", state.debug.active);
-        panel.classList.toggle("open", state.debug.active);
-    });
-
-    const moveStepEl = document.getElementById("dbg-move-step");
-    const rotateStepEl = document.getElementById("dbg-rotate-step");
-    const scaleStepEl = document.getElementById("dbg-scale-step");
-
-    function afterAdjust() {
-        updateDebugReadout();
-        renderDebugGeoJson();
-    }
-
-    document.getElementById("dbg-move-n").addEventListener("click", () => {
-        state.debug.north += Number(moveStepEl.value) || 0;
-        afterAdjust();
-    });
-    document.getElementById("dbg-move-s").addEventListener("click", () => {
-        state.debug.north -= Number(moveStepEl.value) || 0;
-        afterAdjust();
-    });
-    document.getElementById("dbg-move-e").addEventListener("click", () => {
-        state.debug.east += Number(moveStepEl.value) || 0;
-        afterAdjust();
-    });
-    document.getElementById("dbg-move-w").addEventListener("click", () => {
-        state.debug.east -= Number(moveStepEl.value) || 0;
-        afterAdjust();
-    });
-    document.getElementById("dbg-move-reset").addEventListener("click", () => {
-        state.debug.east = 0;
-        state.debug.north = 0;
-        afterAdjust();
-    });
-
-    document.getElementById("dbg-rotate-cw").addEventListener("click", () => {
-        state.debug.rotationDeg = (state.debug.rotationDeg + (Number(rotateStepEl.value) || 0)) % 360;
-        afterAdjust();
-    });
-    document.getElementById("dbg-rotate-ccw").addEventListener("click", () => {
-        state.debug.rotationDeg = (state.debug.rotationDeg - (Number(rotateStepEl.value) || 0) + 360) % 360;
-        afterAdjust();
-    });
-
-    document.getElementById("dbg-scale-x-up").addEventListener("click", () => {
-        state.debug.scaleX += Number(scaleStepEl.value) || 0;
-        afterAdjust();
-    });
-    document.getElementById("dbg-scale-x-down").addEventListener("click", () => {
-        state.debug.scaleX = Math.max(0.01, state.debug.scaleX - (Number(scaleStepEl.value) || 0));
-        afterAdjust();
-    });
-    document.getElementById("dbg-scale-y-up").addEventListener("click", () => {
-        state.debug.scaleY += Number(scaleStepEl.value) || 0;
-        afterAdjust();
-    });
-    document.getElementById("dbg-scale-y-down").addEventListener("click", () => {
-        state.debug.scaleY = Math.max(0.01, state.debug.scaleY - (Number(scaleStepEl.value) || 0));
-        afterAdjust();
-    });
-
-    document.getElementById("dbg-reset-all").addEventListener("click", () => {
-        state.debug.east = 0;
-        state.debug.north = 0;
-        state.debug.rotationDeg = 0;
-        state.debug.scaleX = 1;
-        state.debug.scaleY = 1;
-        afterAdjust();
-        debugSetStatus("Reset to original.");
-    });
-
-    document.getElementById("dbg-copy").addEventListener("click", async () => {
-        const key = document.getElementById("dbg-dataset").value;
-        if (!state.debug.originals) {
-            debugSetStatus("No GeoJSON loaded yet.", true);
-            return;
-        }
-        const text = JSON.stringify(debugCurrentDataset(key));
-        try {
-            await navigator.clipboard.writeText(text);
-            debugSetStatus(`Copied ${debugFilenameFor(key)} (${text.length.toLocaleString()} chars) to clipboard.`);
-        } catch (err) {
-            debugSetStatus(`Clipboard copy failed: ${err.message}`, true);
-        }
-    });
-
-    document.getElementById("dbg-download").addEventListener("click", () => {
-        const key = document.getElementById("dbg-dataset").value;
-        if (!state.debug.originals) {
-            debugSetStatus("No GeoJSON loaded yet.", true);
-            return;
-        }
-        const filename = debugFilenameFor(key);
-        debugDownload(filename, JSON.stringify(debugCurrentDataset(key)));
-        debugSetStatus(`Downloaded ${filename}. Save it over the original in the project root to persist.`);
-    });
-
-    document.getElementById("dbg-copy-all").addEventListener("click", async () => {
-        if (!state.debug.originals) {
-            debugSetStatus("No GeoJSON loaded yet.", true);
-            return;
-        }
-        const bundle = {};
-        for (const key of Object.keys(GEOJSON_FILES)) {
-            bundle[debugFilenameFor(key)] = debugCurrentDataset(key);
-        }
-        const text = JSON.stringify(bundle);
-        try {
-            await navigator.clipboard.writeText(text);
-            debugSetStatus(`Copied all 8 files as one JSON bundle (${text.length.toLocaleString()} chars).`);
-        } catch (err) {
-            debugSetStatus(`Clipboard copy failed: ${err.message}`, true);
-        }
-    });
-}
-
-/* ---------------------------------------------------------------------- */
-/* Building footprint                                                     */
-/* ---------------------------------------------------------------------- */
-
-async function loadBuilding(storeId) {
-    state.building = null;
-    state.layers.building.clearLayers();
-    try {
-        const data = await fetchJSON(`/api/stores/${encodeURIComponent(storeId)}/building`);
-        if (data.status === "needs_calibration") {
-            return; // No building footprint on file - nothing to draw.
-        }
-        state.building = data;
-        state.layers.building.addData(data);
-    } catch (err) {
-        console.warn("Failed to load building footprint:", err);
     }
 }
 
@@ -726,8 +447,6 @@ async function loadStore(storeId) {
     state.layers.storePin = pin;
 
     updateZoomVisibility();
-
-    await loadBuilding(storeId);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -735,34 +454,14 @@ async function loadStore(storeId) {
 /* ---------------------------------------------------------------------- */
 
 function wireLayerControls() {
-    document.getElementById("layer-outlines").addEventListener("change", (e) => {
-        const visible = e.target.checked;
-        setLayerVisible(state.layers.departmentLines, state.map, visible);
-        setLayerVisible(state.layers.aisleLines, state.map, visible && state.map.getZoom() >= ZOOM.DEPT_LABELS_ALL);
-        setLayerVisible(state.layers.rackLines, state.map, visible && state.map.getZoom() >= ZOOM.AISLE_LABELS);
-    });
-
     document.getElementById("layer-satellite").addEventListener("change", (e) => {
         setLayerVisible(state.layers.osmTile, state.map, !e.target.checked);
         setLayerVisible(state.layers.satelliteTile, state.map, e.target.checked);
     });
-    document.getElementById("layer-building").addEventListener("change", (e) => {
-        setLayerVisible(state.layers.building, state.map, e.target.checked);
-    });
-    document.getElementById("layer-floorplan").addEventListener("change", (e) => {
-        const visible = e.target.checked;
-        setLayerVisible(state.layers.departments, state.map, visible);
-        setLayerVisible(state.layers.aisles, state.map, visible && state.map.getZoom() >= ZOOM.DEPT_LABELS_ALL);
-        setLayerVisible(state.layers.racks, state.map, visible && state.map.getZoom() >= ZOOM.AISLE_LABELS);
-        setLayerGroupVisible(state.layers.markerGroup, state.map, visible);
-        if (!visible) {
-            setLayerGroupVisible(state.layers.deptLabels, state.map, false);
-            setLayerGroupVisible(state.layers.aisleLabels, state.map, false);
-            setLayerGroupVisible(state.layers.rackLabels, state.map, false);
-        } else {
-            updateZoomVisibility();
-        }
-    });
+
+    for (const id of ["layer-department", "layer-aisle", "layer-rack"]) {
+        document.getElementById(id).addEventListener("change", updateZoomVisibility);
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -772,7 +471,6 @@ function wireLayerControls() {
 document.addEventListener("DOMContentLoaded", async () => {
     initMap();
     wireLayerControls();
-    wireDebugControls();
     try {
         await loadStores();
     } catch (err) {
