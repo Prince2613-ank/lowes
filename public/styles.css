@@ -157,3 +157,34 @@ html, body {
     white-space: nowrap;
     pointer-events: none;
 }
+
+#map { left: 310px; }
+#directory { position: absolute; top: 56px; left: 0; bottom: 0; width: 310px; box-sizing: border-box; padding: 22px 18px; overflow-y: auto; background: #f7f9fc; border-right: 1px solid #d8e0ec; }
+#directory h1 { font-size: 23px; color: #063b71; margin: 0 0 20px; }
+#directory label { display: block; font-size: 12px; font-weight: 600; margin: 12px 0 6px; }
+#directory input, #directory select { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #becbda; border-radius: 5px; background: white; }
+#catalog-status { font-size: 12px; color: #9b3d17; overflow-wrap: anywhere; }
+#result-count { font-size: 13px; color: #51647b; }
+.store-result { display: block; width: 100%; text-align: left; padding: 14px 12px; background: white; border: 1px solid #dce3ed; border-radius: 7px; margin-bottom: 8px; cursor: pointer; }
+.store-result strong, .store-result span, .store-result small { display: block; margin: 3px 0; }
+.store-result strong { color: #064a87; }
+.store-result span, .store-result small { color: #52677f; }
+.store-result[aria-pressed=true] { border: 2px solid #0878c9; background: #edf7ff; padding: 13px 11px; }
+#selection-info { position: absolute; left: 365px; top: 70px; right: 250px; z-index: 900; padding: 14px; border-radius: 7px; background: white; box-shadow: 0 2px 8px #0002; max-width: 600px; }
+#selected-address, #map-status { font-size: 13px; margin-top: 5px; }
+#map-status { color: #52677f; }
+#layer-panel { left: auto; right: 12px; }
+#selection-info button, #more-stores { padding: 6px 10px; margin-top: 8px; border: 1px solid #becbda; border-radius: 4px; cursor: pointer; background: white; color: #064a87; }
+@media(max-width: 800px) {
+  #directory { width: 230px; padding: 14px 10px; }
+  #map { left: 230px; }
+  #selection-info { left: 280px; right: 12px; }
+  #layer-panel { top: auto; bottom: 12px; }
+  #topbar span { display: none; }
+}
+@media(max-width: 520px) {
+  #directory { bottom: auto; height: 240px; width: 100%; }
+  #map { top: 296px; left: 0; }
+  #selection-info { top: 308px; left: 56px; }
+  #layer-panel { width: 155px; font-size: 11px; }
+}

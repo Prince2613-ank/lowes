@@ -1,5 +1,109 @@
 # Lowe's Map System
 
+## Nationwide automated pipeline
+
+Run from this project folder (dependencies have been installed in `.venv`):
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_pipeline.py
+```
+
+With the virtual environment activated, the equivalent command is
+`python scripts/run_pipeline.py`. No DevTools, URL copying, or manual map files
+are needed. Chrome is the default browser; `--channel msedge` uses Edge.
+For a new installation, install `requirements.txt` first. If using
+`--channel chromium`, also run `python -m playwright install chromium`.
+
+The pipeline discovers the official State Directory, expands multi-store city
+groups, follows city/store links, parses store IDs and JSON-LD metadata, opens
+Store Map in Playwright, and inspects network response content. A dynamically
+constructed per-store API request is used if the visible map flow yields no
+data. That endpoint family comes from the supplied reference; IDs always come
+from discovered store pages. Unrelated locator responses and responses naming
+a different store ID are excluded. Complete JSON responses, including all
+layers and metadata, are preserved. Separate responses are stored in a
+`responses` envelope; byte-exact originals and SHA-256 provenance are retained.
+
+### Commands and configuration
+
+```powershell
+python scripts/discover_all_lowes.py
+python scripts/download_all_store_maps.py
+python scripts/run_pipeline.py --force
+python scripts/run_pipeline.py --workers 2 --delay 2
+python scripts/run_pipeline.py --states AL,AZ --limit 5
+python scripts/download_all_store_maps.py --store-ids 1665
+```
+
+The default scope is all directory states/territories. Optional filters only
+restrict a run. `--force` refreshes maps; `--refresh-discovery` ignores the HTML
+cache. Defaults: two workers, two seconds between navigations/API requests,
+30-second timeout, two retries with exponential backoff, 24-hour HTML cache,
+eight-second map response collection window. Use `--map-wait` for slower pages.
+401/403 challenges are reported, not repeatedly retried. `--headed` is optional;
+no manual browser interaction is part of the pipeline.
+
+Environment equivalents: `LOWES_BASE_URL`, `LOWES_OUTPUT`, `LOWES_WORKERS`,
+`LOWES_DELAY`, `LOWES_TIMEOUT`, `LOWES_BROWSER`, `LOWES_HEADLESS`, `LOWES_STATES`.
+Use the same `LOWES_OUTPUT` for the server if changing the data directory.
+
+### Data and compatibility
+
+* `data/catalog.sqlite`: master catalog, cached pages, and discovery failures.
+  SQLite commits after each store; frontend exports are replaced atomically.
+* `data/stores-index.json`: generated nationwide frontend index.
+* `data/states.json`, `data/cities.json`: successful directory discovery results.
+* `data/stores/<state>/<store_id>/store.json`: store metadata and map status.
+* `data/stores/<state>/<store_id>/map.geojson`: complete layered map response.
+* `data/stores/<state>/<store_id>/responses/`: original network response bytes.
+* `data/stores/<state>/<store_id>/provenance.json`: URLs, hashes, capture time,
+  and validated layer counts.
+* `data/pipeline-report.json`: actual counts and errors for the latest run.
+
+The existing `data/stores.json`, layout/georeference files, and calibration
+API remain compatible. The initial single-store calibrated GeoJSON is imported
+into the new catalog as `imported`, not counted as a new download. The original
+source files are unchanged. A valid existing map is skipped; a failed forced
+refresh retains the prior map and records the refresh error. One failed store
+does not stop other stores. Nonzero exit status indicates failures.
+
+### Frontend
+
+The existing FastAPI app serves the updated Leaflet directory. Start it with
+`python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000`.
+Search name, ID, state, city, ZIP, or address; state/city filters support multiple
+stores in one city. Results render in pages of 100. Selecting a store centers
+its actual coordinates and loads only that store's map through `/api/catalog`.
+Five recently viewed maps are cached. A selection generation counter prevents
+late responses from replacing a newer selection. Satellite, layer toggles,
+labels, and point symbols reuse the existing renderer. Extra layers remain
+available through a Leaflet control. Missing maps show the location and an
+unavailable message. Source map coordinates far from the store are explicitly
+flagged, with separate Location/Indoor view buttons; no assumed translation or
+shared Bloomfield fallback is applied.
+
+### Verification and current live limitation
+
+`python -m pytest -q` runs legacy regression tests, parser/validator/catalog
+tests, and a real Chrome integration against a local synthetic directory.
+The integration tests two states, multiple stores in one city, complete map
+capture, missing/malformed maps, resume, and forced refresh. Local fixture
+results are not counted as downloaded Lowe's maps.
+
+The live nationwide run on 2026-09-15 received HTTP 403 from Lowe's State
+Directory in both direct HTTP and fresh Chrome. Consequently, nationwide live
+discovery and multi-state real map extraction could not be verified. The
+official Bloomfield (CT) and Alabaster (AL) store pages also returned HTTP 403
+in separate browser extraction attempts. All 57 automated tests passed;
+browser UI checks cover real saved Bloomfield rendering plus synthetic
+store switching, filters, lazy loading, layer controls, missing/malformed
+maps, escaped labels, and stale response rejection. Leaflet 1.9.4 is vendored
+with its license, so UI initialization does not depend on a CDN.
+The saved Bloomfield map remains usable. Rerunning the same command resumes when
+the official site permits access; no fabricated stores or maps are inserted.
+
+---
+
 Associates an interactive Lowe's-style store floor layout (which lives in
 its own **local coordinate system**) with the store's real-world
 **latitude/longitude**, via a configurable transformation layer, and

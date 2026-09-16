@@ -34,6 +34,9 @@ app = FastAPI(
     version="1.0.0",
 )
 
+from backend.catalog_api import router as catalog_router
+app.include_router(catalog_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,

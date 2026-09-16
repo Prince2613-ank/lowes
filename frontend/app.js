@@ -5,7 +5,7 @@
  * Lowes_*.geojson floor plan on a Leaflet map over OpenStreetMap tiles.
  * ========================================================================== */
 
-const DEFAULT_CENTER = [41.8140843218019, -72.71526758866406];
+const DEFAULT_CENTER = [39.5, -98.35];
 const DEFAULT_ZOOM = 18;
 
 // Zoom thresholds driving progressive level-of-detail (see spec).
@@ -44,16 +44,10 @@ const STORE_SERVICE_ICONS = {
     kitchen_design_desk: "🍽", // 🍽
 };
 
-const GEOJSON_FILES = {
-    departments: "/static/geojson/Lowes_depertment.geojson",
-    departmentLines: "/static/geojson/Lowes_depertment_line.geojson",
-    departmentPoints: "/static/geojson/Lowes_depertment_point.geojson",
-    aisles: "/static/geojson/Lowes_aisle.geojson",
-    aisleLines: "/static/geojson/Lowes_aisle_line.geojson",
-    aislePoints: "/static/geojson/Lowes_aisle_point.geojson",
-    racks: "/static/geojson/Lowes_rack.geojson",
-    rackLines: "/static/geojson/Lowes_rack_line.geojson",
-};
+const FLOORPLAN_LAYER_KEYS = [
+    "departments", "departmentLines", "departmentPoints", "aisles",
+    "aisleLines", "aislePoints", "racks", "rackLines",
+];
 
 function iconFor(category, markerType) {
     if (category === "basic_information") return BASIC_INFO_ICONS[markerType] || "ℹ";
@@ -98,7 +92,7 @@ const state = {
 /* ---------------------------------------------------------------------- */
 
 function initMap() {
-    const map = L.map("map", { zoomControl: true }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+    const map = L.map("map", { zoomControl: true }).setView(DEFAULT_CENTER, 4);
 
     // Base layers - OpenStreetMap and Esri World Imagery satellite, both
     // public tile services requiring no API key. Only one is shown at a
@@ -178,6 +172,7 @@ function geoJsonStyle(defaults, feature = null) {
 function onEachDepartment(feature, layer) {
     const name = feature.properties.label || feature.properties.name || feature.properties.poi_name || "Department";
     layer.bindPopup(`<b>${name}</b>${feature.properties.category ? humanize(feature.properties.category) : ""}`);
+    if (!layer.getBounds().isValid()) return;
     const center = layer.getBounds().getCenter();
     const label = L.marker(center, {
         interactive: false,
@@ -190,6 +185,7 @@ function onEachDepartment(feature, layer) {
 function onEachAisle(feature, layer) {
     const name = feature.properties.label || feature.properties.name || "Aisle";
     layer.bindPopup(`<b>${name}</b>`);
+    if (!layer.getBounds().isValid()) return;
     const center = layer.getBounds().getCenter();
     const label = L.marker(center, {
         interactive: false,
@@ -203,6 +199,7 @@ function onEachRack(feature, layer) {
     const name = feature.properties.label || feature.properties.name || "Rack";
     const info = feature.properties.info || "";
     layer.bindPopup(`<b>${name}</b>${info}`);
+    if (!layer.getBounds().isValid()) return;
     const center = layer.getBounds().getCenter();
     const label = L.marker(center, {
         interactive: false,
@@ -322,13 +319,6 @@ async function fetchJSON(url, options) {
     return res.json();
 }
 
-async function loadStores() {
-    state.stores = await fetchJSON("/api/stores");
-    if (state.stores.length > 0) {
-        await loadStore(state.stores[0].store_id);
-    }
-}
-
 function clearFeatureLayers() {
     state.layers.departments.clearLayers();
     state.layers.deptLabels.clearLayers();
@@ -341,17 +331,6 @@ function clearFeatureLayers() {
     state.layers.rackLabels.clearLayers();
     state.layers.markerGroup.clearLayers();
     state.layers.markers = [];
-}
-
-async function loadGeoJsonFloorplan() {
-    const data = {};
-    await Promise.all(Object.entries(GEOJSON_FILES).map(async ([key, url]) => {
-        data[key] = await fetchJSON(url);
-    }));
-
-    renderGeoJsonFloorplanData(data);
-
-    return data;
 }
 
 function renderGeoJsonFloorplanData(data) {
@@ -389,52 +368,6 @@ function renderGeoJsonFloorplanData(data) {
         point.layer._minZoom = ZOOM.AISLE_LABELS;
         state.layers.aisleLabels.addLayer(point.layer);
     }
-}
-
-async function loadStore(storeId) {
-    const data = await fetchJSON(`/api/stores/${encodeURIComponent(storeId)}/map`);
-    state.currentStoreId = storeId;
-    state.currentStore = data.store;
-
-    clearFeatureLayers();
-
-    await loadGeoJsonFloorplan();
-
-    const geoJsonBounds = L.featureGroup([
-        state.layers.departments,
-        state.layers.aisles,
-        state.layers.racks,
-        state.layers.departmentLines,
-        state.layers.aisleLines,
-        state.layers.rackLines,
-    ]).getBounds();
-    if (geoJsonBounds.isValid()) {
-        state.map.fitBounds(geoJsonBounds.pad(0.12), { maxZoom: ZOOM.DEPT_LABELS });
-    } else {
-        state.map.setView([data.anchor.latitude, data.anchor.longitude], DEFAULT_ZOOM);
-    }
-
-    if (state.layers.storePin) {
-        state.map.removeLayer(state.layers.storePin);
-    }
-    const pinLatLng = geoJsonBounds.isValid()
-        ? geoJsonBounds.getCenter()
-        : L.latLng(data.anchor.latitude, data.anchor.longitude);
-    const pin = L.marker(pinLatLng, {
-        icon: L.divIcon({
-            className: "",
-            html: `<div class="marker-icon store-pin">S</div>`,
-            iconSize: [34, 34],
-            iconAnchor: [17, 17],
-        }),
-    }).addTo(state.map);
-    pin.bindPopup(`<b>${data.store.name}</b>${data.store.address}`);
-    pin.on("click", () => {
-        state.map.setView(pinLatLng, ZOOM.DEPT_LABELS);
-    });
-    state.layers.storePin = pin;
-
-    updateZoomVisibility();
 }
 
 /* ---------------------------------------------------------------------- */

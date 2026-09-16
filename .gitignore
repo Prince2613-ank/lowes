@@ -4,3 +4,10 @@ __pycache__/
 .venv-local/
 .pytest_cache/
 *.log
+work/
+data/catalog.sqlite*
+data/stores/
+data/stores-index.json
+data/states.json
+data/cities.json
+data/pipeline-report.json
