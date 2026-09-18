@@ -68,3 +68,21 @@ def test_catalog_api_no_legacy_map_fallback(tmp_path, monkeypatch):
     assert client.get('/api/catalog/stores').json()['stores'][0]['store_id'] == '123'
     assert client.get('/api/catalog/stores/123/map').status_code == 404
     assert client.get('/api/catalog/stores/1665/map').status_code == 404
+
+
+def test_catalog_api_saves_details_and_raw_map(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+    c = Catalog(tmp_path)
+    c.put({'store_id':'123','state':'AL','city':'Test','map_status':'pending'})
+    c.export(); c.close()
+    monkeypatch.setenv('LOWES_OUTPUT', str(tmp_path))
+    client = TestClient(app)
+
+    details = {'store_id':'123','name':'Saved store','state':'AL','city':'Test','latitude':33.2,'longitude':-86.8}
+    assert client.post('/api/catalog/stores/123/details', json=details).json()['name'] == 'Saved store'
+    assert client.get('/api/catalog/stores/123/details').json()['latitude'] == 33.2
+
+    raw_map = {'Lowes_aisle': fc(), 'Lowes_depertment': fc(), 'Lowes_rack': fc()}
+    assert client.post('/api/catalog/stores/123/map', json=raw_map).json()['status'] == 'ok'
+    assert client.get('/api/catalog/stores/123/map').json()['Lowes_aisle']['type'] == 'FeatureCollection'

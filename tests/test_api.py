@@ -1,4 +1,6 @@
 """End-to-end API tests via FastAPI's TestClient (in-process, no network)."""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -63,6 +65,49 @@ def test_get_georeference_returns_control_points():
     body = resp.json()
     assert body["store_id"] == "1665"
     assert len(body["control_points"]) >= 1
+
+
+def test_debug_georeference_corners_round_trip():
+    from backend.config import DATA_DIR
+
+    georef_path = DATA_DIR / "stores" / "1665" / "georeference.json"
+    original = georef_path.read_text(encoding="utf-8") if georef_path.exists() else None
+    try:
+        payload = {
+            "store_id": "1665",
+            "offset_x": 27.0,
+            "offset_y": -40.0,
+            "scale": 0.84,
+            "rotation": 180.0,
+            "corners": {
+                "nw": {"x": 10.23, "y": -0.53},
+                "ne": {"x": -49.45, "y": 1.48},
+                "sw": {"x": 10.67, "y": 3.12},
+                "se": {"x": -48.99, "y": 6.35},
+            },
+        }
+
+        resp = client.post("/api/store/1665/debug-georeference", json=payload)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["corners"]["nw"]["x"] == pytest.approx(10.23)
+
+        saved = json.loads(georef_path.read_text(encoding="utf-8"))
+        assert saved["corners"]["nw"]["x"] == pytest.approx(10.23)
+        assert saved["corners"]["se"]["y"] == pytest.approx(6.35)
+        assert "debug" not in saved
+
+        loaded = client.get("/api/store/1665/debug-georeference")
+        assert loaded.status_code == 200
+        assert loaded.headers['cache-control'] == 'no-store'
+        assert TestClient(app).get('/api/store/1665/debug-georeference').json() == body
+        assert loaded.json()["corners"]["nw"]["y"] == pytest.approx(-0.53)
+        assert loaded.json()["corners"]["se"]["x"] == pytest.approx(-48.99)
+    finally:
+        if original is None:
+            georef_path.unlink(missing_ok=True)
+        else:
+            georef_path.write_text(original, encoding="utf-8")
 
 
 def test_auto_align_endpoint():

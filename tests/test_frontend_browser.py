@@ -17,17 +17,28 @@ def test_frontend_switch_search_filters_layers_race_and_missing_maps():
     missing = {**synthetic, 'store_id':'99002','name':'Synthetic no-map store','map_file':None}
     bad = {**synthetic, 'store_id':'99003','name':'Synthetic malformed store'}
     requests = []
+    alignments = {}
     legacy = {path.stem: json.loads(path.read_text()) for path in ROOT.glob('Lowes_*.geojson')}
     feature = {'type':'Feature','properties':{'name':'<img src=x onerror=alert(1)>'},'geometry':{'type':'Polygon','coordinates':[[[-86.8,33.2],[-86.799,33.2],[-86.799,33.201],[-86.8,33.201],[-86.8,33.2]]]}}
     fixture = {k:{'type':'FeatureCollection','features':[feature]} for k in ('department','aisle','rack')}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
+        def do_POST(self):
+            value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            alignments[self.path] = value
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(value).encode())
+
         def do_GET(self):
             path = self.path.split('?')[0]
             requests.append(path)
             status, content_type = 200, 'application/json'
-            if path == '/api/catalog/stores':
+            if path.endswith('/debug-georeference'):
+                value = alignments.get(path, {})
+            elif path == '/api/catalog/stores':
                 value = {'stores':[bloomfield,synthetic,missing,bad]}
             elif path == '/api/catalog/report': value = {}
             elif path == '/api/catalog/stores/1665/map': value = legacy
@@ -76,7 +87,7 @@ def test_frontend_switch_search_filters_layers_race_and_missing_maps():
             assert await page.locator('.store-result').count() == 3
             await page.locator('#city-filter').select_option('Test City')
             await page.locator('[data-store-id="99002"]').click()
-            assert await page.locator('#map-status').inner_text() == 'Store map unavailable'
+            assert await page.locator('#map-status').inner_text() == 'Indoor map unavailable'
             assert await page.evaluate('state.layers.departments.getLayers().length') == 0
             # Late map response must not replace a newer selection.
             await page.evaluate("directory.cache.delete('99001'); loadStore('99001'); loadStore('99002');")
@@ -84,12 +95,43 @@ def test_frontend_switch_search_filters_layers_race_and_missing_maps():
             assert await page.evaluate('state.currentStoreId') == '99002'
             assert await page.evaluate('state.layers.departments.getLayers().length') == 0
             await page.locator('[data-store-id="99003"]').click()
-            await page.wait_for_function("document.querySelector('#map-status').textContent === 'Store map unavailable'")
+            await page.wait_for_function("document.querySelector('#map-status').textContent === 'Indoor map failed'")
             await page.locator('#state-filter').select_option('CT')
             await page.locator('[data-store-id="1665"]').click()
             await page.wait_for_function("document.querySelector('#map-status').textContent === 'Indoor map ready'")
             assert await page.evaluate('state.layers.departmentLines.getLayers().length') >= 0
             assert await page.evaluate('state.layers.markerGroup.getLayers().length') > 0
+            await page.evaluate("""() => {
+                state.map.setView([41.82, -72.71], 19);
+                adjustDebug('east'); adjustDebug('north');
+                adjustDebug('scale-up'); adjustDebug('rotate-right');
+                document.querySelector('#debug-panel').hidden = false;
+                document.querySelector('#debug-mode').checked = true;
+                document.querySelector('#corner-mode').checked = true;
+                renderDebugCorners();
+                const marker = directory.cornerLayer.getLayers().find(layer => layer instanceof L.Marker);
+                const point = marker.getLatLng();
+                marker.setLatLng([point.lat + 0.0001, point.lng + 0.0001]);
+                marker.fire('dragend');
+            }""")
+            assert await page.evaluate('state.map.getZoom()') == 19
+            assert await page.evaluate("Math.abs(state.map.getCenter().lat - 41.82) < 0.000001")
+            assert await page.evaluate("Math.abs(state.map.getCenter().lng + 72.71) < 0.000001")
+            expected = await page.evaluate('JSON.parse(JSON.stringify(state.currentStore.debugGeoreference))')
+            bounds = await page.evaluate('directory.bounds.toBBoxString()')
+            await page.evaluate("document.querySelector('#debug-controls').hidden = false; document.querySelector('#corner-controls').hidden = false;")
+            await page.locator('#corner-save').click()
+            await page.wait_for_function("document.querySelector('#adjustment-save-status').textContent === 'Saved. No expiry.'")
+            assert await page.locator('#map-status').inner_text() == 'Alignment saved for everyone'
+            await page.reload()
+            await page.wait_for_function("document.querySelector('#map-status').textContent === 'Indoor map ready'")
+            assert await page.evaluate('state.currentStore.debugGeoreference') == expected
+            assert await page.evaluate('directory.bounds.toBBoxString()') == bounds
+            other = await browser.new_page()
+            await other.route('https://**/*', lambda route: route.abort())
+            await other.goto(f'http://127.0.0.1:{server.server_port}/')
+            await other.wait_for_function("document.querySelector('#map-status').textContent === 'Indoor map ready'")
+            assert await other.evaluate('directory.bounds.toBBoxString()') == bounds
             assert not errors
             await browser.close()
     try: asyncio.run(verify())

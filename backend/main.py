@@ -9,15 +9,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
+import subprocess
+import sys
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
-from backend import georeference, layout_service, store_service
-from backend.config import ALLOWED_ORIGINS, FRONTEND_DIR, GEOJSON_DIR, LAYOUT_IMAGES_DIR, LAYOUTS_DIR
+from backend import directory_service, georeference, layout_service, store_service
+from backend.config import ALLOWED_ORIGINS, DATA_DIR, FRONTEND_DIR, GEOJSON_DIR, LAYOUT_IMAGES_DIR, LAYOUTS_DIR
 from backend.models import GeoreferenceFile, Transform
 from backend.store_service import InvalidStoreIdError, StoreNotFoundError
 
@@ -33,9 +37,6 @@ app = FastAPI(
     ),
     version="1.0.0",
 )
-
-from backend.catalog_api import router as catalog_router
-app.include_router(catalog_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -80,8 +81,68 @@ def startup_validation() -> None:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/stores")
-def api_list_stores():
-    return [s.model_dump() for s in store_service.list_stores()]
+def api_list_stores(state: Optional[str] = None, city: Optional[str] = None):
+    return directory_service.stores_for(state, city)
+
+
+@app.get("/api/states")
+def api_list_states():
+    return directory_service.load_states()
+
+
+@app.get("/api/cities")
+def api_list_cities(state: str):
+    return directory_service.cities_for(state)
+
+
+@app.get("/api/store/{store_id}")
+def api_get_directory_store(store_id: str):
+    entry = directory_service.store(store_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Store not found")
+    return entry
+
+
+@app.get("/api/store/{store_id}/map-status")
+def api_get_directory_map_status(store_id: str):
+    entry = directory_service.store(store_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Store not found")
+    return {
+        "store_id": store_id,
+        "status": entry.get("map_status", "unavailable"),
+        "map_url": entry.get("indoor_map_url", f"https://www.lowes.com/omniselling/store/{store_id}/map-view"),
+        "map_file": entry.get("map_file"),
+    }
+
+
+@app.post("/api/directory/refresh")
+def api_refresh_directory():
+    return directory_service.refresh()
+
+
+@app.get("/api/connecticut/sync-status")
+def api_connecticut_sync_status():
+    stores = directory_service.load_directory_stores()
+    stores = [item for item in stores if item.get("state_code") == "CT"]
+    return {
+        "cities": len({item.get("city") for item in stores}),
+        "stores_discovered": len(stores),
+        "maps_ready": sum(item.get("indoor_map_status") == "success" for item in stores),
+        "maps_pending": sum(item.get("indoor_map_status") == "pending" for item in stores),
+        "maps_unavailable": sum(item.get("indoor_map_status") == "no_indoor_map" for item in stores),
+        "maps_failed": sum(item.get("indoor_map_status") == "failed" for item in stores),
+    }
+
+
+@app.post("/api/store/{store_id}/download-map")
+def api_download_map(store_id: str):
+    entry = directory_service.store(store_id)
+    if entry is None or entry.get("state_code") != "CT":
+        raise HTTPException(status_code=404, detail="Connecticut store not found")
+    command = [sys.executable, "-m", "scripts.sync_connecticut", "--store-id", store_id]
+    process = subprocess.Popen(command, cwd=str(DATA_DIR.parent), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"status": "downloading", "store_id": store_id, "process_id": process.pid}
 
 
 @app.get("/api/stores/{store_id}")
@@ -95,7 +156,6 @@ def api_get_store(store_id: str):
     return store.model_dump()
 
 
-# ---------------------------------------------------------------------------
 # Layout endpoints
 # ---------------------------------------------------------------------------
 
@@ -130,13 +190,46 @@ def api_get_layout_raw(store_id: str):
 @app.get("/api/stores/{store_id}/map")
 def api_get_map(store_id: str):
     """Combined view: store info + anchor + full geographic layout."""
+    directory_entry = directory_service.store(store_id)
     try:
         store = store_service.get_store(store_id)
-        geo = layout_service.get_geo_layout(store_id)
     except InvalidStoreIdError:
         raise HTTPException(status_code=400, detail="Invalid store_id")
     except StoreNotFoundError:
-        raise HTTPException(status_code=404, detail="Store not found")
+        if directory_entry is None:
+            raise HTTPException(status_code=404, detail="Store not found")
+        processed_dir = DATA_DIR / "connecticut" / "stores" / store_id / "processed"
+        processed_files = {key: processed_dir / filename for key, filename in {
+            "departments": "departments.geojson", "aisles": "aisles.geojson",
+            "racks": "racks.geojson", "pois": "pois.geojson",
+        }.items()}
+        if not all(path.is_file() for path in processed_files.values()):
+            raise HTTPException(status_code=404, detail="Indoor map unavailable")
+        processed = {key: json.loads(path.read_text(encoding="utf-8")) for key, path in processed_files.items()}
+        return {"store": directory_entry, "anchor": {"latitude": directory_entry.get("latitude"), "longitude": directory_entry.get("longitude")}, "source_url": directory_entry.get("map_url"), "layout": processed}
+
+    processed_dir = DATA_DIR / "stores" / store_id / "processed"
+    processed_files = {
+        key: processed_dir / filename
+        for key, filename in {
+            "departments": "departments.geojson",
+            "aisles": "aisles.geojson",
+            "racks": "racks.geojson",
+            "pois": "pois.geojson",
+        }.items()
+    }
+    if all(path.is_file() for path in processed_files.values()):
+        processed = {key: json.loads(path.read_text(encoding="utf-8")) for key, path in processed_files.items()}
+        source_url = processed["departments"].get("metadata", {}).get("source_url")
+        return {
+            "store": store.model_dump(),
+            "anchor": {"latitude": store.latitude, "longitude": store.longitude},
+            "source_url": source_url,
+            "layout": processed,
+        }
+
+    try:
+        geo = layout_service.get_geo_layout(store_id)
     except layout_service.LayoutNotFoundError:
         raise HTTPException(status_code=404, detail="Layout not found")
 
@@ -165,6 +258,80 @@ class CalibrationUpdate(BaseModel):
     rotation_degrees: float
     offset_x: float
     offset_y: float
+
+
+class DebugGeoreference(BaseModel):
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+    scale: float = Field(default=1.0, gt=0.0, le=5.0)
+    rotation: float = 0.0
+    corners: dict[str, dict[str, float]] = Field(default_factory=lambda: {
+        "nw": {"x": 0.0, "y": 0.0}, "ne": {"x": 0.0, "y": 0.0},
+        "sw": {"x": 0.0, "y": 0.0}, "se": {"x": 0.0, "y": 0.0},
+    })
+
+
+def _debug_georeference_path(store_id: str):
+    from backend.store_service import validate_store_id
+
+    validate_store_id(store_id)
+    path = (DATA_DIR / "stores" / store_id / "georeference.json").resolve()
+    root = (DATA_DIR / "stores").resolve()
+    if root not in path.parents:
+        raise HTTPException(status_code=400, detail="Invalid store_id")
+    return path
+
+
+@app.get("/api/store/{store_id}/debug-georeference")
+def api_get_debug_georeference(store_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    path = _debug_georeference_path(store_id)
+    if not path.exists():
+        return {
+            "store_id": store_id,
+            "offset_x": 0.0,
+            "offset_y": 0.0,
+            "scale": 1.0,
+            "rotation": 0.0,
+            "corners": {
+                "nw": {"x": 0.0, "y": 0.0},
+                "ne": {"x": 0.0, "y": 0.0},
+                "sw": {"x": 0.0, "y": 0.0},
+                "se": {"x": 0.0, "y": 0.0},
+            },
+        }
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    candidate = raw.get("debug", raw) if isinstance(raw, dict) else raw
+    if not isinstance(candidate, dict):
+        candidate = {}
+    model = DebugGeoreference.model_validate(candidate)
+    return {"store_id": store_id, **model.model_dump()}
+
+
+@app.post("/api/store/{store_id}/debug-georeference")
+def api_save_debug_georeference(store_id: str, body: DebugGeoreference):
+    path = _debug_georeference_path(store_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    raw.pop("debug", None)
+    raw["store_id"] = store_id
+    raw.update(body.model_dump())
+    # Replace only after the complete alignment has reached disk.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as file:
+            temporary = file.name
+            json.dump(raw, file, indent=2, allow_nan=False)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+    logger.info("Saved debug georeference for store %s", store_id)
+    return {"store_id": store_id, **body.model_dump()}
 
 
 @app.post("/api/stores/{store_id}/calibrate")
@@ -446,6 +613,9 @@ def api_get_floorplan(store_id: str):
 # Static assets: uploaded floor-plan images (SVG, preserved as vector data -
 # mounted BEFORE the frontend catch-all below so /static/... resolves here).
 # ---------------------------------------------------------------------------
+
+from backend.catalog_api import router as catalog_router
+app.include_router(catalog_router, prefix="/api/catalog")
 
 app.mount("/static/layout-images", StaticFiles(directory=str(LAYOUT_IMAGES_DIR)), name="layout-images")
 app.mount("/static/geojson", StaticFiles(directory=str(GEOJSON_DIR)), name="geojson")

@@ -11,9 +11,9 @@ const DEFAULT_ZOOM = 18;
 // Zoom thresholds driving progressive level-of-detail (see spec).
 const ZOOM = {
     STORE_LEVEL: 18,
-    DEPT_LABELS: 19,
+    DEPT_LABELS: 18,
     DEPT_LABELS_ALL: 20,
-    AISLE_LABELS: 21,
+    AISLE_LABELS: 18,
     RACK_DETAIL: 22,
     MAX_DETAIL: 23,
 };
